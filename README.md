@@ -30,13 +30,18 @@ and an agent-control CLI on top.
 
 ```sh
 swift build
-.build/arm64-apple-macosx/debug/halo            # run the app
+.build/arm64-apple-macosx/debug/halo            # run the app (dev)
 swift run halo selfcheck                          # pure-logic checks
-./install.sh                                      # symlink `halo` → /usr/local/bin
+./install.sh                                      # symlink `halo` → /usr/local/bin (CLI)
+
+./make-app.sh                                     # build Halo.app (double-clickable, logo icon)
+open Halo.app                                     # launch the bundle
 ```
 
-> The debug binary is bundle-less and dies if its launching shell exits — use
-> `nohup .build/.../halo & disown`, or build an `.app` bundle, for a detached run.
+> The raw debug binary is bundle-less and dies if its launching shell exits (use
+> `nohup .build/.../halo & disown`). **`./make-app.sh`** packages a proper
+> `Halo.app` — logo dock icon, "Halo" menu, double-click launch, detached
+> lifetime. The binary is self-contained (ghostty is statically linked).
 
 ## The `halo` CLI
 

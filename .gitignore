@@ -2,3 +2,7 @@
 *.xcframework/
 .DS_Store
 .superpowers/
+
+# built app bundle (use ./make-app.sh)
+Halo.app/
+*.app/
