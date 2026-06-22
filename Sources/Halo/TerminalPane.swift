@@ -103,6 +103,20 @@ import GhosttyKit
         keyAction(GHOSTTY_ACTION_RELEASE, event: ev)
     }
 
+    // MARK: - Edit menu (responder-chain copy/paste via ghostty binding actions)
+
+    private func bindingAction(_ name: String) {
+        guard let surface else { return }
+        name.withCString { ghostty_surface_binding_action(surface, $0, UInt(name.utf8.count)) }
+    }
+    @objc func copy(_ sender: Any?)  { bindingAction("copy_to_clipboard") }   // no-op if no selection
+    @objc func paste(_ sender: Any?) {
+        // Insert clipboard text directly via the surface (bracketed paste) — more
+        // reliable than the binding action, and correct (multi-line won't auto-run).
+        guard let surface, let s = NSPasteboard.general.string(forType: .string), !s.isEmpty else { return }
+        s.withCString { ghostty_surface_text(surface, $0, UInt(s.utf8.count)) }
+    }
+
     /// Best-effort capture of the screen (or full scrollback) as plain text.
     func capture(scrollback: Bool) -> String {
         guard let surface else { return "" }
