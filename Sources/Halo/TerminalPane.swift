@@ -9,6 +9,7 @@ import GhosttyKit
     private(set) var cwd: String?          // from ghostty PWD action (OSC 7)
     private(set) var title: String = ""    // from ghostty SET_TITLE action (OSC 0/2)
     var onUpdate: (() -> Void)?            // cwd / title changed
+    var onAttention: (() -> Void)?         // bell / desktop-notification fired
 
     /// The underlying ghostty surface. Optional because surface creation can fail.
     /// nonisolated(unsafe): it's a raw pointer, and deinit (which frees it) runs
@@ -108,6 +109,9 @@ import GhosttyKit
     /// reports a new title / working directory for this surface.
     func setLiveTitle(_ t: String) { if t != title { title = t; onUpdate?() } }
     func setLiveCwd(_ c: String)   { if c != cwd  { cwd = c;  onUpdate?() } }
+
+    /// Called (on the main actor) when ghostty fires RING_BELL or DESKTOP_NOTIFICATION.
+    func fireAttention() { onAttention?() }
 
     // MARK: - NSView
 

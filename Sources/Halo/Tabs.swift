@@ -7,6 +7,7 @@ struct SidebarSession {
     let active: Bool
     var ports: [Int] = []   // listening TCP ports of the session's foreground process tree
     var dirty: Int = 0      // uncommitted changes in the session's cwd (git status --porcelain)
+    var attention: Bool = false  // bell/desktop-notification fired while session was not active
 }
 
 struct SidebarProject {
@@ -39,6 +40,9 @@ final class Workspace {
 
     // Session→branch tag: keyed by PaneTree instance identity to avoid touching PaneTree's init.
     private var worktreeBranch: [ObjectIdentifier: String] = [:]
+
+    // Sessions that have rung the bell / fired a desktop notification while not active.
+    private var attention: Set<ObjectIdentifier> = []
 
     var activeTree: PaneTree { projs[activeP].sessions[activeS] }
 
@@ -172,6 +176,7 @@ final class Workspace {
     func selectSession(_ p: Int, _ s: Int) {
         guard projs.indices.contains(p), projs[p].sessions.indices.contains(s) else { return }
         activeP = p; activeS = s
+        attention.remove(ObjectIdentifier(activeTree))
         showActive()
     }
 
@@ -227,7 +232,8 @@ final class Workspace {
                 if multi { label = "\(si + 1). \(label)" }
                 // Prefer worktree branch tag when available.
                 if let br = worktreeBranch[ObjectIdentifier(tree)] { label = "⎇ \(br)" }
-                return SidebarSession(label: label, active: pi == activeP && si == activeS)
+                return SidebarSession(label: label, active: pi == activeP && si == activeS,
+                                     attention: attention.contains(ObjectIdentifier(tree)))
             }
             return SidebarProject(
                 name: proj.name,
@@ -330,6 +336,7 @@ final class Workspace {
     func selectSessionInActiveProject(_ i: Int) {
         guard projs.indices.contains(activeP), projs[activeP].sessions.indices.contains(i - 1) else { return }
         activeS = i - 1
+        attention.remove(ObjectIdentifier(activeTree))
         showActive()
     }
 
@@ -342,6 +349,13 @@ final class Workspace {
     private func makeTree(cwd: String?) -> PaneTree {
         let tree = PaneTree(theme: theme, cwd: cwd)
         tree.onFocusChange = { [weak self] in self?.handleChange() }
+        tree.onAttention = { [weak self, weak tree] in
+            guard let self, let tree else { return }
+            // Only ring if this session isn't the one you're looking at.
+            if tree !== self.activeTree {
+                self.attention.insert(ObjectIdentifier(tree)); self.handleChange()
+            }
+        }
         return tree
     }
 
@@ -351,6 +365,8 @@ final class Workspace {
         v.frame = body.bounds
         v.autoresizingMask = [.width, .height]
         body.addSubview(v)
+        // Clear attention ring for the now-focused session.
+        attention.remove(ObjectIdentifier(activeTree))
         handleChange()
     }
 
@@ -431,6 +447,11 @@ func workspaceSelfCheck() {
     assert(fixActiveP(2, removed: 0, count: 2) == 1, "remove before active shifts it down")
     assert(fixActiveP(0, removed: 1, count: 2) == 0, "remove after active leaves it")
     assert(fixActiveP(1, removed: 1, count: 1) == 0, "remove active clamps into range")
+
+    // ── Attention: set when signalled while NOT the active session; clear on select ──
+    func attn(active: Bool) -> Bool { !active }     // mirrors Workspace.attentionFired guard
+    assert(attn(active: false) == true,  "signal on background session → ring")
+    assert(attn(active: true)  == false, "signal on focused session → no ring")
 
     print("workspaceSelfCheck OK")
 }

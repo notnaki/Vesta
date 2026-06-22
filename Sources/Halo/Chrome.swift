@@ -369,6 +369,20 @@ final class HaloWindowController: NSWindowController {
             innerViews.append(portLabel)
         }
 
+        // Attention ring: 8×8 accent-bordered ring when the session has a pending bell.
+        if sess.attention {
+            let ring = NSView()
+            ring.translatesAutoresizingMaskIntoConstraints = false
+            ring.wantsLayer = true
+            ring.layer?.borderWidth = 1.5
+            ring.layer?.cornerRadius = 4
+            ring.layer?.borderColor = theme.accent.cgColor               // color sync: always theme.accent
+            ring.layer?.backgroundColor = NSColor.clear.cgColor
+            ring.widthAnchor.constraint(equalToConstant: 8).isActive = true
+            ring.heightAnchor.constraint(equalToConstant: 8).isActive = true
+            innerViews.append(ring)
+        }
+
         let inner = NSStackView(views: innerViews)
         inner.orientation = .horizontal
         inner.alignment = .centerY

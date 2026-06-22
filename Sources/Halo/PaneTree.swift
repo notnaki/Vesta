@@ -89,6 +89,8 @@ final class PaneTree {
 
     /// Fired whenever focus moves or the focused pane's cwd/title changes.
     var onFocusChange: (() -> Void)?
+    /// Fired when any pane in this tree rings the bell or fires a desktop notification.
+    var onAttention: (() -> Void)?
 
     init(theme: Theme, cwd: String? = nil) {
         self.theme = theme
@@ -263,6 +265,7 @@ final class PaneTree {
             guard let self, pane.id == self.focusedId else { return }
             self.onFocusChange?()
         }
+        pane.onAttention = { [weak self] in self?.onAttention?() }
         let l = Leaf(pane: pane, accent: theme.accent, surface: theme.background)
         leaves.append(l)
         return l

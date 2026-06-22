@@ -151,6 +151,14 @@ final class GhosttyApp {
             newTitle = action.action.set_title.title.map { String(cString: $0) }; newPwd = nil
         case GHOSTTY_ACTION_PWD:
             newPwd = action.action.pwd.pwd.map { String(cString: $0) }; newTitle = nil
+        case GHOSTTY_ACTION_RING_BELL, GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
+            nonisolated(unsafe) let udSafe2 = ud
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    Unmanaged<TerminalPane>.fromOpaque(udSafe2).takeUnretainedValue().fireAttention()
+                }
+            }
+            return true
         default:
             return false
         }
