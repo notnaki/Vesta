@@ -111,6 +111,51 @@ all self-checks ok
 
 2. **`workspaceSelfCheck` is data-model only** — it cannot create a real `Workspace` in selfcheck mode because `Workspace.init` creates `PaneTree` → `TerminalPane` → `GhosttyApp.shared` (needs a running NSApp). The selfcheck tests `Proj`, `SidebarSession`, `SidebarProject` struct logic and invariants at the data level. The full integration (sessions actually spawning, `closeSession` replace path, `toggleExpand` creating PaneTrees) is exercised at real app launch.
 
-3. **`loadProjects(_:) -> [Project]` legacy overload** retained in main.swift — unused after this change but harmless. Can be removed in a later cleanup.
+3. **Chrome.swift sidebar is not yet updated** — it still renders from the static `projects: [Project]` passed at init. Task B will wire `setProjects([SidebarProject])`. The five callbacks are wired in AppDelegate to drive Workspace + refresh(), per spec.
 
-4. **Chrome.swift sidebar is not yet updated** — it still renders from the static `projects: [Project]` passed at init. Task B will wire `setProjects([SidebarProject])`. The five callbacks are wired in AppDelegate to drive Workspace + refresh(), per spec.
+---
+
+## Task A Fix Pass (review findings applied)
+
+### FIX 1 — Launch crash (Critical)
+
+`Workspace.init` was calling `showActive()` → `activeTree` → `projs[0].sessions[0]` on an empty sessions array — out-of-bounds trap at launch.
+
+Fix: in `init`, build the home project as `var homeProj`, append a real session via `homeProj.sessions.append(makeTree(cwd: home))` before calling `projs.append(homeProj)` and `showActive()`. The home project now has exactly one session at `~` before `showActive()` runs.
+
+### FIX 2 — CLI ignores cwd (Critical)
+
+`newSession(_:)` hardcoded `makeTree(cwd: NSHomeDirectory())` and `newTab(cwd:)` routed through it, so `halo open /tmp` silently opened at `~`.
+
+Fix: extracted private `addSession(_ p: Int, cwd: String?)` that appends a session at the given cwd, expands the project, and activates it. `newSession(_:)` now calls `addSession(p, cwd: NSHomeDirectory())` (unchanged default). `newTab(cwd:)` calls `addSession(targetP, cwd: cwd)` so the real cwd is honored.
+
+### FIX 3 — Meaningless self-checks (Important)
+
+The `closeSession`-never-zero check simulated a local counter variable and asserted on a dead decrement branch. The `toggleExpand` block created a `SidebarSession` stub and asserted `.active` on it (always true).
+
+Fix: extracted `nonisolated static func replaceOnClose(totalSessions: Int) -> Bool` from `closeSession`'s decision branch; used it in `closeSession` (`if Workspace.replaceOnClose(totalSessions: total)`). Self-check now asserts the real function: `Workspace.replaceOnClose(totalSessions: 1) == true` and `Workspace.replaceOnClose(totalSessions: 2) == false`. The `toggleExpand` stub replaced with an honest `projs[emptyIdx].sessions.isEmpty == true` predicate check. No `Workspace`/`PaneTree` instantiation needed.
+
+### FIX 4 — Minor cleanup
+
+**(a)** Removed `cwd: String? = nil` parameter from `Workspace.init` (was already unused — call site in main.swift already used `Workspace(theme: theme)`).
+
+**(b)** Added `projs.indices.contains(activeP)` bounds guard to `nextSession()`, `prevSession()`, and `selectSessionInActiveProject(_:)`.
+
+**(c)** Removed the dead `loadProjects(_ settings: [String: String]) -> [Project]` overload from `main.swift`. It was never called after Task A (confirmed with grep).
+
+### Build Result
+
+```
+Build complete! (3.07s)
+```
+
+(Two pre-existing linker warnings about missing ImGui symbols in libghostty-internal.a — not introduced by this task.)
+
+### Selfcheck Output
+
+```
+controlSelfCheck ok
+gitSelfCheck OK
+workspaceSelfCheck OK
+all self-checks ok
+```

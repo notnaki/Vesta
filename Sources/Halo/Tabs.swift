@@ -47,7 +47,7 @@ final class Workspace {
     var onNewProject:     (() -> Void)?
     var onChange:         (() -> Void)?
 
-    init(theme: Theme, cwd: String? = nil) {
+    init(theme: Theme) {
         self.theme = theme
         container.wantsLayer = true
         container.layer?.backgroundColor = theme.background.cgColor
@@ -64,7 +64,8 @@ final class Workspace {
         // Launch: home project at ~ with one session at ~, expanded + active.
         // Config projects are appended collapsed + empty by loadProjects/appendProject.
         let home = NSHomeDirectory()
-        let homeProj = makeProj(name: "~", path: home, expanded: true)
+        var homeProj = makeProj(name: "~", path: home, expanded: true)
+        homeProj.sessions.append(makeTree(cwd: home))
         projs.append(homeProj)
         activeP = 0
         activeS = 0
@@ -88,14 +89,18 @@ final class Workspace {
         }
     }
 
-    func newSession(_ p: Int) {
+    private func addSession(_ p: Int, cwd: String?) {
         guard projs.indices.contains(p) else { return }
-        let tree = makeTree(cwd: NSHomeDirectory())
+        let tree = makeTree(cwd: cwd)
         projs[p].sessions.append(tree)
         projs[p].expanded = true
         activeP = p
         activeS = projs[p].sessions.count - 1
         showActive()
+    }
+
+    func newSession(_ p: Int) {
+        addSession(p, cwd: NSHomeDirectory())
     }
 
     func newProject() {
@@ -116,11 +121,14 @@ final class Workspace {
         showActive()
     }
 
+    /// Returns true when the last session is about to be removed — replace instead of deleting.
+    nonisolated static func replaceOnClose(totalSessions: Int) -> Bool { totalSessions <= 1 }
+
     func closeSession(_ p: Int, _ s: Int) {
         guard projs.indices.contains(p), projs[p].sessions.indices.contains(s) else { return }
         // Never let global session count reach 0.
         let total = projs.reduce(0) { $0 + $1.sessions.count }
-        if total <= 1 {
+        if Workspace.replaceOnClose(totalSessions: total) {
             // Replace with a fresh ~ session rather than leaving 0.
             let tree = makeTree(cwd: NSHomeDirectory())
             projs[p].sessions[s] = tree
@@ -184,7 +192,7 @@ final class Workspace {
     var tabs: [PaneTree] { projs.flatMap { $0.sessions } }
 
     func newTab(cwd: String?) {
-        // Compat: opens a new session in the active project.
+        // Compat: opens a new session in the active project at the given cwd.
         // If cwd matches a project path, prefer that project; else use activeP.
         let targetP: Int
         if let cwd, let pi = projs.indices.first(where: { projs[$0].path == cwd }) {
@@ -192,7 +200,7 @@ final class Workspace {
         } else {
             targetP = activeP
         }
-        newSession(targetP)
+        addSession(targetP, cwd: cwd)
     }
 
     func closeTab() { closeSession(activeP, activeS) }
@@ -240,21 +248,21 @@ final class Workspace {
     // MARK: - Cycle sessions within active project
 
     func nextSession() {
-        guard !projs[activeP].sessions.isEmpty else { return }
+        guard projs.indices.contains(activeP), !projs[activeP].sessions.isEmpty else { return }
         let count = projs[activeP].sessions.count
         activeS = (activeS + 1) % count
         showActive()
     }
 
     func prevSession() {
-        guard !projs[activeP].sessions.isEmpty else { return }
+        guard projs.indices.contains(activeP), !projs[activeP].sessions.isEmpty else { return }
         let count = projs[activeP].sessions.count
         activeS = (activeS - 1 + count) % count
         showActive()
     }
 
     func selectSessionInActiveProject(_ i: Int) {
-        guard projs[activeP].sessions.indices.contains(i - 1) else { return }
+        guard projs.indices.contains(activeP), projs[activeP].sessions.indices.contains(i - 1) else { return }
         activeS = i - 1
         showActive()
     }
@@ -311,10 +319,9 @@ func workspaceSelfCheck() {
     assert(sp.branch == "main", "branch passthrough")
     assert(sp.active && sp.expanded, "project flags")
 
-    // ── toggleExpand semantics: empty → would create session; non-empty → flip ──
-    // Simulate the toggleExpand logic on the struct directly.
-    assert(homeProj.sessions.isEmpty)
-    // would create a session → just mark expanded (model invariant)
+    // ── toggleExpand semantics: empty → create session; non-empty → flip ───────
+    // The real Workspace.toggleExpand branches on sessions.isEmpty; verify the predicate.
+    assert(homeProj.sessions.isEmpty == true, "toggleExpand: empty project takes the create-session branch")
     homeProj.expanded = true
     assert(homeProj.expanded, "toggleExpand on empty → expanded")
 
@@ -323,13 +330,9 @@ func workspaceSelfCheck() {
     configProj.expanded.toggle()
     assert(!configProj.expanded, "toggleExpand twice → back to false")
 
-    // ── closeSession invariant: global session count never reaches 0 ─────────
-    // Simulate with a simple counter (the rule: if total == 1, replace instead of remove).
-    var total = 1
-    let wouldRemove = total <= 1  // triggers the "replace" path
-    assert(wouldRemove, "last session triggers replace path, not remove")
-    if !wouldRemove { total -= 1 }
-    assert(total >= 1, "session count never < 1")
+    // ── closeSession invariant: replaceOnClose is the real decision function ───
+    assert(Workspace.replaceOnClose(totalSessions: 1) == true,  "last session triggers replace, not remove")
+    assert(Workspace.replaceOnClose(totalSessions: 2) == false, "two sessions: safe to remove one")
 
     // ── newProject appends and sets activeP to the new index ─────────────────
     var projs: [Proj] = [homeProj, configProj]
@@ -345,15 +348,12 @@ func workspaceSelfCheck() {
     assert(projs[emptyIdx].sessions.isEmpty, "appendProject: starts empty")
     assert(!projs[emptyIdx].expanded, "appendProject: starts collapsed")
 
-    // ── toggleExpand on empty project: creates session at project path ────────
-    // (In real Workspace this creates a PaneTree; here we verify the state transition.)
+    // ── toggleExpand on empty project: takes the create-session branch ───────
+    // Real Workspace.toggleExpand branches on sessions.isEmpty; verify the predicate holds.
+    assert(projs[emptyIdx].sessions.isEmpty == true, "toggleExpand on empty: would take create-session branch")
     projs[emptyIdx].expanded = true
     activeP = emptyIdx
-    let activeS = 0
-    // Simulate session creation (the path that would be: sessions.append(makeTree))
-    let simulatedSession = SidebarSession(label: "/tmp", active: true)
-    assert(simulatedSession.active, "new session from toggleExpand is active")
-    assert(activeP == emptyIdx && activeS == 0, "toggleExpand on empty: activates project")
+    assert(activeP == emptyIdx, "toggleExpand on empty: activates the project")
 
     print("workspaceSelfCheck OK")
 }

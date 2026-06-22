@@ -152,13 +152,6 @@ func loadProjects(_ settings: [String: String], into workspace: Workspace) {
     }
 }
 
-// Legacy overload used by the selfcheck branch (no workspace argument).
-func loadProjects(_ settings: [String: String]) -> [Project] {
-    let raw = settings["halo-projects"]?
-        .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } ?? []
-    let paths = raw.isEmpty ? [FileManager.default.currentDirectoryPath] : raw.map { ($0 as NSString).expandingTildeInPath }
-    return paths.map { Project(name: ($0 as NSString).lastPathComponent, path: $0) }
-}
 
 func abbreviateHome(_ path: String) -> String {
     let home = NSHomeDirectory()
