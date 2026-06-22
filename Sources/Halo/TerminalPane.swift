@@ -79,10 +79,28 @@ import GhosttyKit
     /// Type text into the pane (used by `halo send-keys`).
     func sendKeys(_ s: String) {
         guard let surface, !s.isEmpty else { return }
-        let len = s.utf8.count
-        s.withCString { ptr in
-            ghostty_surface_text(surface, ptr, UInt(len))
+        // ghostty_surface_text inserts via bracketed paste, which DEFERS newlines —
+        // so a trailing "\n" never submits the command. Insert printable segments as
+        // text, but submit each line break with a real Return key event.
+        let lines = s.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" })
+        for (i, line) in lines.enumerated() {
+            let part = line.hasSuffix("\r") ? String(line.dropLast()) : String(line)
+            if !part.isEmpty {
+                part.withCString { ghostty_surface_text(surface, $0, UInt(part.utf8.count)) }
+            }
+            if i < lines.count - 1 { sendReturn() }
         }
+    }
+
+    /// Synthesize an Enter key press (keyCode 0x24) so the shell executes the line.
+    private func sendReturn() {
+        guard let ev = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window?.windowNumber ?? 0, context: nil,
+            characters: "\r", charactersIgnoringModifiers: "\r",
+            isARepeat: false, keyCode: 0x24) else { return }
+        keyAction(GHOSTTY_ACTION_PRESS, event: ev)
+        keyAction(GHOSTTY_ACTION_RELEASE, event: ev)
     }
 
     /// Best-effort capture of the screen (or full scrollback) as plain text.
