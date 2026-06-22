@@ -89,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         workspace.onChange = { [weak self] in self?.refresh() }
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
+        NSApp.mainMenu = makeMainMenu(target: self)   // bundle-less binary: build the menu bar
 
         server = ControlServer(workspace: workspace)
         server.start()
@@ -129,6 +130,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
+
+    // MARK: - Menu actions
+
+    @objc func showAbout() {
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "Halo",
+            .applicationVersion: "0.1.0",
+            .credits: NSAttributedString(
+                string: "A native macOS terminal for running AI coding agents in parallel, built on libghostty.",
+                attributes: [.font: NSFont.systemFont(ofSize: 11)]),
+        ])
+    }
+
+    /// Halo's settings ARE the ghostty config (halo-* keys). Open it in the user's editor.
+    @objc func openSettings() {
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+        let candidates = [
+            "\(home)/.config/ghostty/config",
+            "\(home)/Library/Application Support/com.mitchellh.ghostty/config",
+        ]
+        if let existing = candidates.first(where: { fm.fileExists(atPath: $0) }) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: existing)); return
+        }
+        // None exists yet — create the XDG one with a starter comment, then open it.
+        let path = candidates[0]
+        try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                withIntermediateDirectories: true)
+        let starter = "# Halo reads your ghostty config. Add halo-* keys here.\n"
+            + "# e.g. halo-accent = #7dcfb6, halo-sidebar-width = 240\n"
+        try? starter.write(toFile: path, atomically: true, encoding: .utf8)
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    @objc func showHelp() {
+        let a = NSAlert()
+        a.messageText = "Halo Help"
+        a.informativeText = """
+        Keys
+          ⌘D / ⌘⇧D   split vertical / horizontal
+          ⌘W / ⌘⇧W   close pane / session
+          ⌘T          new session        ⌘B  toggle sidebar
+          ⌘]          focus next pane     ⌘{ / ⌘}  prev / next session
+          ⌘1–9        select session      ⌘⇧↵  open browser pane
+
+        Sidebar
+          Right-click a project: rename, recolor, remove, new worktree session.
+
+        CLI
+          Run `halo help` in any terminal for the agent-control API
+          (split, send-keys, capture, worktree, browser, …).
+
+        Settings live in your ghostty config — Halo ▸ Settings… (⌘,).
+        """
+        a.runModal()
+    }
+
+    @objc func toggleSidebarMenu() { controller.toggleSidebar() }
 
     /// Rebuild the sidebar from the live snapshot, filling branch + meta from caches.
     /// Pure render — must NOT call refresh() (avoid a loop).
