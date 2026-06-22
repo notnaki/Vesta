@@ -100,6 +100,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated { self?.pollAttention() }
         }
         NSApp.activate(ignoringOtherApps: true)
+        // Window is key now — focus the active pane so the user can type immediately.
+        workspace.focusActive()
     }
 
     /// Ring a background session when its foreground process returns to the shell

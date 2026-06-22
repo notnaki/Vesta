@@ -393,10 +393,16 @@ final class Workspace {
         v.frame = body.bounds
         v.autoresizingMask = [.width, .height]
         body.addSubview(v)
+        // Make the active session's focused pane first responder so you can type
+        // immediately without clicking it.
+        activeTree.focusActivePane()
         // Clear attention ring for the now-focused session.
         attention.remove(ObjectIdentifier(activeTree))
         handleChange()
     }
+
+    /// Focus the active session's pane (call after the window becomes key at launch).
+    func focusActive() { activeTree.focusActivePane() }
 
     private func handleChange() {
         onChange?()

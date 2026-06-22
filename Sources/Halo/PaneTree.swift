@@ -308,13 +308,18 @@ final class PaneTree {
     }
 
     private func restyle() {
+        let multi = leaves.count > 1
         for l in leaves {
             let on = (l.id == focusedId)
-            l.overlay.focused = on
+            l.overlay.focused = on && multi   // no focus ticks when there's a single pane
             if on { l.content.focusContent() }
         }
         onFocusChange?()
     }
+
+    /// Make the focused pane the window's first responder so typing works without
+    /// a click (called when this session becomes the active one).
+    func focusActivePane() { leaf(focusedId)?.content.focusContent() }
 
     /// The focused pane's label + cwd, for the tab/titlebar/footer.
     var focusedLabel: String { focused?.label ?? "shell" }
