@@ -95,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = makeMainMenu(target: self)   // bundle-less binary: build the menu bar
 
         server = ControlServer(workspace: workspace)
+        server.onReload = { [weak self] in self?.reloadConfig() }
         server.start()
 
         installKeybinds()
@@ -119,6 +120,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func checkForUpdates() { Updater.check(silent: false) }
+
+    /// Delete Halo's own config (revert to the ghostty config / defaults) and reload.
+    @objc func resetConfig() {
+        try? FileManager.default.removeItem(atPath: haloConfigPath())
+        reloadConfig()
+    }
 
     /// Ring a background session when its foreground process returns to the shell
     /// (a command/agent turn finished). Cleared when the session is focused.
@@ -162,15 +169,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    /// Confirm before quitting (⌘Q) — running sessions would be killed.
+    /// Confirm before quitting (⌘Q) — running sessions would be killed — unless
+    /// the user ticked "Don't ask again".
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if UserDefaults.standard.bool(forKey: "HaloSkipQuitConfirm") { return .terminateNow }
         let a = NSAlert()
         a.messageText = "Quit Halo?"
         a.informativeText = "This closes all sessions and their running programs."
         a.alertStyle = .warning
+        a.showsSuppressionButton = true
+        a.suppressionButton?.title = "Don't ask again"
         a.addButton(withTitle: "Quit Halo")
         a.addButton(withTitle: "Cancel")
-        return a.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+        guard a.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+        if a.suppressionButton?.state == .on {
+            UserDefaults.standard.set(true, forKey: "HaloSkipQuitConfirm")
+        }
+        return .terminateNow
     }
 
     // MARK: - Menu actions
@@ -205,7 +220,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onSidebarWidth: { [weak self] w in self?.controller.setSidebarWidth(w) },
                 onImport: { [weak self] in self?.importGhosttyConfig() },
                 onOpenConfig: { [weak self] in self?.openConfigFile() },
-                onReload: { [weak self] in self?.reloadConfig() })
+                onReload: { [weak self] in self?.reloadConfig() },
+                onReset: { [weak self] in self?.resetConfig() })
         }
         settingsWC?.showWindow(nil)
         settingsWC?.window?.makeKeyAndOrderFront(nil)

@@ -9,17 +9,20 @@ final class SettingsWindowController: NSWindowController {
     private let onImport: () -> Void
     private let onOpenConfig: () -> Void
     private let onReload: () -> Void
+    private let onReset: () -> Void
     private var configView: NSTextView?   // full-config editor (any ghostty key)
 
     init(theme: Theme,
          onSidebarWidth: @escaping (CGFloat) -> Void,
          onImport: @escaping () -> Void,
          onOpenConfig: @escaping () -> Void,
-         onReload: @escaping () -> Void) {
+         onReload: @escaping () -> Void,
+         onReset: @escaping () -> Void) {
         self.onSidebarWidth = onSidebarWidth
         self.onImport = onImport
         self.onOpenConfig = onOpenConfig
         self.onReload = onReload
+        self.onReset = onReset
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 600),
                            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         win.title = "Halo Settings"
@@ -47,6 +50,8 @@ final class SettingsWindowController: NSWindowController {
         surface.target = self; surface.action = #selector(surfaceChanged(_:))
         stack.addArrangedSubview(row("Surface", surface))
 
+        stack.addArrangedSubview(row("Font", fontPopup()))
+
         stack.addArrangedSubview(row("Sidebar width",
             slider(Double(cfg.sidebarWidth), 160, 420, #selector(sidebarChanged(_:)))))
         stack.addArrangedSubview(row("Font size",
@@ -62,6 +67,7 @@ final class SettingsWindowController: NSWindowController {
         let btns = NSStackView(views: [
             button("Import ghostty config", #selector(importTapped)),
             button("Open config file", #selector(openTapped)),
+            button("Reset config", #selector(resetTapped)),
             button("Reload", #selector(reloadTapped)),
         ])
         btns.orientation = .horizontal; btns.spacing = 8
@@ -128,6 +134,24 @@ final class SettingsWindowController: NSWindowController {
         return b
     }
 
+    /// Terminal font picker (ghostty `font-family`). Bundled families first, then
+    /// every installed family; selecting applies + reloads.
+    private func fontPopup() -> NSPopUpButton {
+        let p = NSPopUpButton()
+        p.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        let bundled = ["Geist Mono", "Martian Mono",
+                       "Redaction", "Redaction 10", "Redaction 20", "Redaction 35",
+                       "Redaction 50", "Redaction 70", "Redaction 100"]
+        p.addItems(withTitles: bundled)
+        p.menu?.addItem(.separator())
+        p.addItems(withTitles: NSFontManager.shared.availableFontFamilies.sorted())
+        let current = GhosttyApp.shared.settings["font-family"]?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\" "))
+        if let current, !current.isEmpty { p.selectItem(withTitle: current) }
+        p.target = self; p.action = #selector(fontFamilyChanged(_:))
+        return p
+    }
+
     // Each control persists immediately to Halo's config.
     @objc private func accentChanged(_ s: NSColorWell)  { setHaloConfigKey("halo-accent", hexString(s.color)) }
     @objc private func surfaceChanged(_ s: NSColorWell) { setHaloConfigKey("halo-surface", hexString(s.color)) }
@@ -147,6 +171,25 @@ final class SettingsWindowController: NSWindowController {
         try? text.write(toFile: path, atomically: true, encoding: .utf8)
 
         onReload()
+    }
+
+    /// Change the terminal font (ghostty `font-family`) and apply immediately.
+    @objc private func fontFamilyChanged(_ p: NSPopUpButton) {
+        guard let name = p.titleOfSelectedItem else { return }
+        setHaloConfigKey("font-family", name)
+        configView?.string = currentConfigText()
+        onReload()
+    }
+
+    /// Delete Halo's config (revert to ghostty config / defaults), then reload.
+    @objc private func resetTapped() {
+        let a = NSAlert()
+        a.messageText = "Reset Halo config?"
+        a.informativeText = "Deletes your Halo config and reverts to your ghostty config / defaults."
+        a.addButton(withTitle: "Reset"); a.addButton(withTitle: "Cancel")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        onReset()
+        configView?.string = currentConfigText()
     }
 
     @objc private func importTapped() { onImport() }

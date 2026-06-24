@@ -129,7 +129,8 @@ final class GhosttyApp {
 
         let parsed = loadGhosttyConfig()
         settings = parsed.settings
-        let hc = HaloConfig(parsed.settings)
+        HaloConfig.refresh()   // rebuild the cached halo-* knobs (fonts/width/etc.)
+        let hc = HaloConfig.shared
         var t = GhosttyApp.makeTheme(config: cfg, accent: hc.accent ?? parsed.theme.accent)
         if let s = hc.surface { t.background = s }
         theme = t

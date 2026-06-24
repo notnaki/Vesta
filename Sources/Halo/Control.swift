@@ -7,7 +7,7 @@ func controlSocketPath() -> String {
     return base + "/control.sock"
 }
 
-let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser"]
+let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser", "reload"]
 
 // MARK: - Socket helpers
 
@@ -51,6 +51,8 @@ final class ControlServer: @unchecked Sendable {
     private let workspace: Workspace
     private let queue = DispatchQueue(label: "halo.control.server")
     private var listenFD: Int32 = -1
+    /// Live config reload (set by AppDelegate; re-themes chrome + surfaces).
+    var onReload: (@MainActor () -> Void)?
 
     init(workspace: Workspace) { self.workspace = workspace }
 
@@ -167,6 +169,9 @@ final class ControlServer: @unchecked Sendable {
             let url = urlStr == "about:blank" ? URL(string: "about:blank")! : BrowserURL.normalize(urlStr)
             tree.openBrowser(url: url)
             return ["ok": true, "url": url.absoluteString]
+        case "reload":
+            onReload?()
+            return ["ok": true]
         default:
             return ["ok": false, "error": "unknown cmd: \(cmd)"]
         }
@@ -242,6 +247,7 @@ func printUsage() {
       tab new|next|prev|close [--cwd DIR]   manage tabs
       worktree <branch> [--base <ref>]      open a git-worktree-isolated session on <branch>
       browser [url|port]                    open an embedded browser pane (port → http://localhost:PORT)
+      reload                                re-read the config and apply colors/font/theme live
 
     Config (in your ghostty config; libghostty ignores the halo- keys):
       halo-projects = ~/a, ~/b      sidebar projects

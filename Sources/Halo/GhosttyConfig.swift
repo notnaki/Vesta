@@ -209,7 +209,11 @@ struct HaloConfig {
 
     /// Built from the real config once GhosttyApp is up. Safe to read from any UI
     /// code (Fonts/Chrome/PaneTree) — all of it runs after GhosttyApp.shared init.
-    @MainActor static let shared = HaloConfig(GhosttyApp.shared.settings)
+    /// `var` so a live reload can rebuild it from the re-read config.
+    @MainActor static var shared = HaloConfig(GhosttyApp.shared.settings)
+
+    /// Rebuild from the freshly-reloaded config (called by reload).
+    @MainActor static func refresh() { shared = HaloConfig(GhosttyApp.shared.settings) }
 }
 
 // MARK: - Self-check
