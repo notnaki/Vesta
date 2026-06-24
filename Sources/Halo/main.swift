@@ -442,7 +442,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "d":  self.workspace.activeTree.splitFocused(shift ? .horizontal : .vertical, cwd: self.workspace.activeTree.focusedCwd); return nil
             // ⌘W: pane → session → window (cascade). ⌘⇧W: close session.
             case "w":
-                let ws = self.workspace
+                let ws = self.workspace!
                 if shift {
                     ws.closeSession(ws.activeP, ws.activeS)
                 } else if ws.activeTree.paneCount > 1 {
