@@ -22,6 +22,12 @@ final class GhosttyApp {
     private(set) var settings: [String: String]
 
     private init() {
+        // libghostty resolves `theme = <name>` from $GHOSTTY_RESOURCES_DIR/themes.
+        // A terminal launch inherits that env var; a Finder/`open` launch does NOT,
+        // so named themes silently fall back to defaults. Point it at our bundled
+        // copy (or an installed Ghostty) before init.
+        GhosttyApp.ensureResourcesDir()
+
         // ghostty_init must run exactly once before anything else. It takes
         // argc/argv; we pass our real process arguments.
         _ = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
@@ -77,6 +83,14 @@ final class GhosttyApp {
 
         // Initial focus follows the application's active state.
         ghostty_app_set_focus(app, NSApp.isActive)
+    }
+
+    /// Ensure libghostty can find its themes dir even when launched from Finder
+    /// (where the shell's GHOSTTY_RESOURCES_DIR isn't inherited). Prefer a copy
+    /// bundled inside Halo.app; fall back to an installed Ghostty.
+    private static func ensureResourcesDir() {
+        if ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"] != nil { return }
+        if let dir = ghosttyResourcesDir() { setenv("GHOSTTY_RESOURCES_DIR", dir, 1) }
     }
 
     // MARK: - Ticking

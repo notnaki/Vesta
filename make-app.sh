@@ -36,6 +36,19 @@ cp "$BIN" "${APP}/Contents/MacOS/Halo"
 cp -R "$BUNDLE" "${APP}/Contents/Resources/"
 cp /tmp/AppIcon.icns "${APP}/Contents/Resources/AppIcon.icns"
 
+# ghostty's resources dir (themes/, for `theme = <name>` color sync). A Finder
+# launch doesn't inherit $GHOSTTY_RESOURCES_DIR, so bundle Halo's own vendored
+# copy (Resources/ghostty, committed to the repo). GhosttyApp points
+# GHOSTTY_RESOURCES_DIR at this bundled dir — no installed Ghostty required.
+GRES="Resources/ghostty"
+[ -d "$GRES/themes" ] || GRES="${GHOSTTY_RESOURCES_DIR:-/Applications/Ghostty.app/Contents/Resources/ghostty}"
+if [ -d "$GRES/themes" ]; then
+  cp -R "$GRES" "${APP}/Contents/Resources/ghostty"
+  echo ">> bundled ghostty resources (themes) from $GRES"
+else
+  echo "  WARN: no ghostty resources at $GRES — named themes won't resolve in the bundle"
+fi
+
 cat > "${APP}/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

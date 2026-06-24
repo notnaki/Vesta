@@ -114,7 +114,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let dirs = pendingOpenDirs; pendingOpenDirs = []
             for d in dirs { workspace.newTab(cwd: d) }
         }
+
+        Updater.check(silent: true)   // notify if a newer GitHub release exists
     }
+
+    @objc func checkForUpdates() { Updater.check(silent: false) }
 
     /// Ring a background session when its foreground process returns to the shell
     /// (a command/agent turn finished). Cleared when the session is focused.

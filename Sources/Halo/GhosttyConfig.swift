@@ -120,6 +120,21 @@ func setHaloConfigKey(_ key: String, _ value: String) {
     try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
 }
 
+/// Halo's self-contained ghostty resources dir (themes/, shell-integration/),
+/// resolved so named-theme color sync works WITHOUT relying on an installed
+/// Ghostty: bundled inside Halo.app first, then the repo's vendored copy (dev),
+/// then $GHOSTTY_RESOURCES_DIR, then an installed Ghostty as a last resort.
+func ghosttyResourcesDir() -> String? {
+    let fm = FileManager.default
+    var candidates: [String] = []
+    if let r = Bundle.main.resourceURL?.appendingPathComponent("ghostty").path { candidates.append(r) }
+    candidates.append(fm.currentDirectoryPath + "/Resources/ghostty")   // dev: `swift run` from repo root
+    if let env = ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"] { candidates.append(env) }
+    candidates.append("/Applications/Ghostty.app/Contents/Resources/ghostty")
+    candidates.append("\(NSHomeDirectory())/Applications/Ghostty.app/Contents/Resources/ghostty")
+    return candidates.first { fm.fileExists(atPath: $0 + "/themes") }
+}
+
 /// The ghostty config Halo would import from (first existing), or nil.
 func ghosttyConfigPath() -> String? {
     let home = NSHomeDirectory()
@@ -153,7 +168,7 @@ func loadGhosttyConfig() -> (theme: Theme, settings: [String: String]) {
     if let themeName = mainPairs.last(where: { $0.0 == "theme" })?.1 {
         var themeCandidates: [String] = ["\(home)/.config/ghostty/themes/\(themeName)"]
         if let xdg { themeCandidates.append("\(xdg)/ghostty/themes/\(themeName)") }
-        themeCandidates.append("/Applications/Ghostty.app/Contents/Resources/ghostty/themes/\(themeName)")
+        if let res = ghosttyResourcesDir() { themeCandidates.append("\(res)/themes/\(themeName)") }
         if let tp = firstExisting(themeCandidates), let tt = readFile(tp) {
             basePairs = parseGhosttyConfig(tt)
         }

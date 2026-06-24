@@ -8,6 +8,7 @@ final class SettingsWindowController: NSWindowController {
     private let onSidebarWidth: (CGFloat) -> Void
     private let onImport: () -> Void
     private let onOpenConfig: () -> Void
+    private var configView: NSTextView?   // full-config editor (any ghostty key)
 
     init(theme: Theme,
          onSidebarWidth: @escaping (CGFloat) -> Void,
@@ -16,9 +17,10 @@ final class SettingsWindowController: NSWindowController {
         self.onSidebarWidth = onSidebarWidth
         self.onImport = onImport
         self.onOpenConfig = onOpenConfig
-        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 360),
-                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 600),
+                           styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         win.title = "Halo Settings"
+        win.minSize = NSSize(width: 420, height: 460)
         super.init(window: win)
         build(theme: theme)
         win.center()
@@ -62,13 +64,45 @@ final class SettingsWindowController: NSWindowController {
         btns.orientation = .horizontal; btns.spacing = 8
         stack.addArrangedSubview(btns)
 
+        // ── Full config editor — accepts ANY ghostty key (libghostty parses the
+        // whole file), so this is the complete config surface, not just halo-*.
+        let header = NSTextField(labelWithString: "Config — any ghostty option (see ghostty.org/docs/config)")
+        header.font = .boldSystemFont(ofSize: 12)
+        stack.addArrangedSubview(header)
+
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let tv = NSTextView()
+        tv.isRichText = false
+        tv.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.isAutomaticSpellingCorrectionEnabled = false
+        tv.string = currentConfigText()
+        scroll.documentView = tv
+        self.configView = tv
+        stack.addArrangedSubview(scroll)
+        stack.addArrangedSubview(button("Save config", #selector(saveConfigTapped)))
+
         let content = window!.contentView!
         content.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             stack.topAnchor.constraint(equalTo: content.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
         ])
+    }
+
+    /// Halo's current config text — the editable file if it exists, else the
+    /// ghostty config it would import from, else empty.
+    private func currentConfigText() -> String {
+        if let t = try? String(contentsOfFile: haloConfigPath(), encoding: .utf8) { return t }
+        if let src = ghosttyConfigPath(), let t = try? String(contentsOfFile: src, encoding: .utf8) { return t }
+        return ""
     }
 
     private func row(_ label: String, _ control: NSView) -> NSView {
@@ -100,6 +134,23 @@ final class SettingsWindowController: NSWindowController {
     }
     @objc private func fontChanged(_ s: NSSlider)    { setHaloConfigKey("halo-font-size", "\(Int(s.doubleValue))") }
     @objc private func dividerChanged(_ s: NSSlider) { setHaloConfigKey("halo-divider-width", "\(Int(s.doubleValue))") }
+    /// Write the editor's full text to Halo's config, then offer to relaunch so
+    /// libghostty re-reads it (colors/font/theme need a fresh config load).
+    @objc private func saveConfigTapped() {
+        guard let text = configView?.string else { return }
+        let path = haloConfigPath()
+        try? FileManager.default.createDirectory(
+            atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try? text.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let a = NSAlert()
+        a.messageText = "Config saved"
+        a.informativeText = "Relaunch Halo to apply the changes?"
+        a.addButton(withTitle: "Relaunch")
+        a.addButton(withTitle: "Later")
+        if a.runModal() == .alertFirstButtonReturn { relaunchTapped() }
+    }
+
     @objc private func importTapped() { onImport() }
     @objc private func openTapped()   { onOpenConfig() }
     @objc private func relaunchTapped() {

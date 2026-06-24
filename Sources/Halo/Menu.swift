@@ -15,6 +15,8 @@ func makeMainMenu(target: AppDelegate) -> NSMenu {
     appItem.submenu = app
     app.addItem(withTitle: "About Halo", action: #selector(AppDelegate.showAbout), keyEquivalent: "")
         .target = target
+    app.addItem(withTitle: "Check for Updates…", action: #selector(AppDelegate.checkForUpdates), keyEquivalent: "")
+        .target = target
     app.addItem(.separator())
     app.addItem(withTitle: "Settings…", action: #selector(AppDelegate.openSettings), keyEquivalent: ",")
         .target = target
