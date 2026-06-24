@@ -6,6 +6,7 @@ import GhosttyKit
 /// renderer. Adapted from Ghostty's own SurfaceView_AppKit.swift (MIT).
 @MainActor final class TerminalPane: NSView, @preconcurrency NSTextInputClient, NSTextFieldDelegate, PaneContent {
     private(set) var id: Int
+    let paneID: String                     // stable mux session id (UUID string)
     private(set) var cwd: String?          // from ghostty PWD action (OSC 7)
     private(set) var title: String = ""    // from ghostty SET_TITLE action (OSC 0/2)
     var onUpdate: (() -> Void)?            // cwd / title changed
@@ -34,8 +35,9 @@ import GhosttyKit
     /// The last content size we were told about, used when backing props change.
     private var contentSize: NSSize = .init(width: 800, height: 600)
 
-    init(id: Int, theme: Theme, cwd: String? = nil) {
+    init(id: Int, theme: Theme, cwd: String? = nil, paneID: String = UUID().uuidString) {
         self.id = id
+        self.paneID = paneID
         self.cwd = cwd
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
 
@@ -53,10 +55,19 @@ import GhosttyKit
         config.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2.0)
         config.font_size = 0 // inherit from ghostty config
 
+        // When persist is on, run `halo-attach <paneID>` instead of a bare shell
+        // so the pane connects to (or creates) the daemon session for this paneID.
+        // `halo-persist = false` in config restores the bare-shell fallback.
+        let muxCommand: String? = HaloConfig.shared.persist
+            ? "\(muxHelperPath()) \(paneID)" : nil
+
         // The working directory string must outlive the ghostty_surface_new call.
         self.surface = withOptionalCString(cwd) { cwdPtr in
             config.working_directory = cwdPtr
-            return ghostty_surface_new(GhosttyApp.shared.app, &config)
+            return withOptionalCString(muxCommand) { cmdPtr in
+                if let cmdPtr { config.command = cmdPtr }
+                return ghostty_surface_new(GhosttyApp.shared.app, &config)
+            }
         }
 
         // Tracking area so we receive mouseMoved/entered/exited.

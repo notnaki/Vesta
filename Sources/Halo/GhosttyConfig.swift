@@ -196,6 +196,7 @@ struct HaloConfig {
     var fontMono: String        // uppercase instrument labels (Martian Mono)
     var fontScale: CGFloat      // multiplier on all chrome font sizes
     var dividerWidth: CGFloat   // split grab/draw thickness
+    var persist: Bool           // halo-persist: spawn halo-attach (mux) instead of a bare shell
 
     init(_ s: [String: String]) {
         surface      = s["halo-surface"].flatMap(ghosttyColor)
@@ -205,6 +206,7 @@ struct HaloConfig {
         fontMono     = s["halo-font-mono"]   ?? "MartianMono"
         fontScale    = CGFloat((s["halo-font-size"].flatMap(Double.init) ?? 13) / 13)
         dividerWidth = s["halo-divider-width"].flatMap(Double.init).map { CGFloat($0) } ?? 8
+        persist      = (s["halo-persist"].map { $0 != "false" && $0 != "0" }) ?? true   // default ON in M3
     }
 
     /// Built from the real config once GhosttyApp is up. Safe to read from any UI

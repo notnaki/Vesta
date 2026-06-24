@@ -135,7 +135,7 @@ final class PaneTree {
         root = NSView()
         root.wantsLayer = true
         root.layer?.backgroundColor = theme.background.cgColor
-        let first = makeTerminalLeaf(cwd: cwd)
+        let first = makeTerminalLeaf(cwd: cwd, paneID: paneID)
         first.autoresizingMask = [.width, .height]
         first.frame = root.bounds
         root.addSubview(first)
@@ -330,9 +330,9 @@ final class PaneTree {
 
     private func leaf(_ id: Int) -> Leaf? { leaves.first { $0.id == id } }
 
-    private func makeTerminalLeaf(cwd: String?) -> Leaf {
+    private func makeTerminalLeaf(cwd: String?, paneID: String = UUID().uuidString) -> Leaf {
         let id = nextId; nextId += 1
-        let pane = TerminalPane(id: id, theme: theme, cwd: cwd)
+        let pane = TerminalPane(id: id, theme: theme, cwd: cwd, paneID: paneID)
         pane.onUpdate = { [weak self] in
             guard let self, id == self.focusedId else { return }
             self.onFocusChange?()
