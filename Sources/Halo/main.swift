@@ -440,18 +440,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch e.charactersIgnoringModifiers {
             // Split panes (unchanged)
             case "d":  self.workspace.activeTree.splitFocused(shift ? .horizontal : .vertical, cwd: self.workspace.activeTree.focusedCwd); return nil
-            // ⌘W: close focused pane; ⌘⇧W: close active session
+            // ⌘W: close focused pane if session has >1 pane, else close session; ⌘⇧W: close session
             case "w":
                 if shift {
                     self.workspace.closeSession(self.workspace.activeP, self.workspace.activeS)
-                } else {
+                } else if self.workspace.activeTree.paneCount > 1 {
                     self.workspace.activeTree.closeFocused()
+                } else {
+                    self.workspace.closeSession(self.workspace.activeP, self.workspace.activeS)
                 }
                 return nil
             // ⌘B: toggle sidebar
             case "b":  self.controller.toggleSidebar(); return nil
-            // ⌘]: focus next pane within the active session
+            // ⌘]/⌘[: focus next/prev pane within the active session
             case "]":  self.workspace.activeTree.focusNext(); return nil
+            case "[":  self.workspace.activeTree.focusPrev(); return nil
             // ⌘T: new session in the active project (cwd = ~)
             case "t":  self.workspace.newSession(self.workspace.activeP); return nil
             // ⌘}/⌘{: cycle sessions within the active project

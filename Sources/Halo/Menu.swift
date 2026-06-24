@@ -52,6 +52,8 @@ func makeMainMenu(target: AppDelegate) -> NSMenu {
     viewItem.submenu = view
     view.addItem(withTitle: "Toggle Sidebar", action: #selector(AppDelegate.toggleSidebarMenu), keyEquivalent: "b")
         .target = target
+    let fsItem = view.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
+    fsItem.keyEquivalentModifierMask = [.command, .control]
 
     // ── Window ───────────────────────────────────────────────────────────────
     let windowItem = NSMenuItem()

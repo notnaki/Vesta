@@ -249,6 +249,13 @@ final class PaneTree {
         restyle()
     }
 
+    func focusPrev() {
+        guard !leaves.isEmpty else { return }
+        let i = leaves.firstIndex { $0.id == focusedId } ?? 0
+        focusedId = leaves[(i - 1 + leaves.count) % leaves.count].id
+        restyle()
+    }
+
     func focus(id: Int) {
         guard leaf(id) != nil else { return }
         focusedId = id

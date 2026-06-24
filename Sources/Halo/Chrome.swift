@@ -88,6 +88,7 @@ final class HaloWindowController: NSWindowController {
         win.center()
         // Remember window size/position across launches (falls back to centered).
         win.setFrameAutosaveName("HaloMainWindow")
+        win.collectionBehavior.insert(.fullScreenPrimary)
 
         super.init(window: win)
 
