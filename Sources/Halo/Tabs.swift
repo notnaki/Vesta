@@ -392,7 +392,11 @@ final class Workspace {
         let projsData: [[String: Any]] = projs.map { p in
             var d: [String: Any] = [
                 "id": p.id, "name": p.name, "path": p.path, "expanded": p.expanded,
-                "sessions": p.sessions.map { $0.focusedCwd ?? p.path },
+                "sessions": p.sessions.map { (t: PaneTree) -> [String: Any] in
+                    var sd: [String: Any] = ["cwd": t.focusedCwd ?? p.path, "paneID": t.paneID]
+                    if let nm = t.name { sd["name"] = nm }
+                    return sd
+                },
             ]
             if let c = p.color { d["color"] = hexString(c) }
             return d
@@ -424,8 +428,17 @@ final class Workspace {
             let color = (pd["color"] as? String).flatMap { ghosttyColor($0) }
             let expanded = pd["expanded"] as? Bool ?? true
             var proj = Proj(id: id, name: name, path: path, sessions: [], expanded: expanded, color: color)
-            for cwd in (pd["sessions"] as? [String] ?? []) {
-                proj.sessions.append(makeTree(cwd: usableDir(cwd, fallback: path)))
+            for entry in (pd["sessions"] as? [Any] ?? []) {
+                let cwd: String, pid: String, nm: String?
+                if let d = entry as? [String: Any] {
+                    cwd = d["cwd"] as? String ?? path
+                    pid = d["paneID"] as? String ?? UUID().uuidString
+                    nm  = d["name"] as? String
+                } else if let s = entry as? String {   // legacy windows.json (pre-M2)
+                    cwd = s; pid = UUID().uuidString; nm = nil
+                } else { continue }
+                proj.sessions.append(makeTree(cwd: usableDir(cwd, fallback: path),
+                                              paneID: pid, name: nm))
             }
             projs.append(proj)
         }
@@ -483,8 +496,8 @@ final class Workspace {
         handleChange()
     }
 
-    private func makeTree(cwd: String?) -> PaneTree {
-        let tree = PaneTree(theme: theme, cwd: cwd)
+    private func makeTree(cwd: String?, paneID: String = UUID().uuidString, name: String? = nil) -> PaneTree {
+        let tree = PaneTree(theme: theme, cwd: cwd, paneID: paneID, name: name)
         tree.onFocusChange = { [weak self] in self?.handleChange() }
         tree.onAttention = { [weak self, weak tree] in
             guard let self, let tree else { return }
@@ -603,6 +616,34 @@ func workspaceSelfCheck() {
     func attn(active: Bool) -> Bool { !active }     // mirrors Workspace.attentionFired guard
     assert(attn(active: false) == true,  "signal on background session → ring")
     assert(attn(active: true)  == false, "signal on focused session → no ring")
+
+    // ── Per-session snapshot is {cwd, paneID, name}; hydrate accepts dict + legacy ──
+    func snap(cwd: String, paneID: String, name: String?) -> [String: Any] {
+        var d: [String: Any] = ["cwd": cwd, "paneID": paneID]
+        if let name { d["name"] = name }
+        return d
+    }
+    // New dict shape: read back all three fields.
+    let s = snap(cwd: "/tmp", paneID: "PID-1", name: "build")
+    assert(s["cwd"] as? String == "/tmp", "snapshot cwd round-trips")
+    assert(s["paneID"] as? String == "PID-1", "snapshot paneID round-trips")
+    assert(s["name"] as? String == "build", "snapshot name round-trips")
+    // nil name is simply absent (not stored as NSNull).
+    let s2 = snap(cwd: "/tmp", paneID: "PID-2", name: nil)
+    assert(s2["name"] == nil, "nil name is omitted from the snapshot")
+
+    // hydrate's reader: a session entry may be the new dict OR a legacy bare cwd string.
+    func readSession(_ entry: Any) -> (cwd: String, paneID: String?, name: String?) {
+        if let d = entry as? [String: Any] {
+            return (d["cwd"] as? String ?? home, d["paneID"] as? String, d["name"] as? String)
+        }
+        if let cwd = entry as? String { return (cwd, nil, nil) }   // legacy windows.json
+        return (home, nil, nil)
+    }
+    let r1 = readSession(s)
+    assert(r1.cwd == "/tmp" && r1.paneID == "PID-1" && r1.name == "build", "reads new dict entry")
+    let r2 = readSession("/legacy/path")   // pre-M2 format
+    assert(r2.cwd == "/legacy/path" && r2.paneID == nil && r2.name == nil, "reads legacy string entry")
 
     print("workspaceSelfCheck OK")
 }

@@ -118,6 +118,9 @@ final class PaneTree {
     /// Persisted in Tabs.swift's per-session snapshot.
     private(set) var name: String?
 
+    /// Stable per-session id (UUID string). Persisted; M3 reattaches by it.
+    let paneID: String
+
     /// Set (or clear, when blank) this session's name. Fires onFocusChange so
     /// the sidebar + any open switcher re-render.
     func setName(_ s: String?) {
@@ -125,8 +128,10 @@ final class PaneTree {
         onFocusChange?()
     }
 
-    init(theme: Theme, cwd: String? = nil) {
+    init(theme: Theme, cwd: String? = nil, paneID: String = UUID().uuidString, name: String? = nil) {
         self.theme = theme
+        self.paneID = paneID
+        self.name = normalizedSessionName(name)
         root = NSView()
         root.wantsLayer = true
         root.layer?.backgroundColor = theme.background.cgColor
