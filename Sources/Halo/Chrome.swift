@@ -46,6 +46,10 @@ final class HaloWindowController: NSWindowController {
     private var footer: NSTextField!
     private var dirLabel: NSTextField!
 
+    // Prefix-mode "armed" indicator (shown in the titlebar while waiting for the
+    // next key). Color comes from theme.accent — never hardcoded.
+    private var prefixPill: NSTextField?
+
     // Mutable container for the projects stack — cleared+refilled by setProjects.
     private var projectsStack: NSStackView!
 
@@ -108,6 +112,9 @@ final class HaloWindowController: NSWindowController {
         surface = t.background
         window?.backgroundColor = surface
         sidebar?.layer?.backgroundColor = surface.cgColor
+        prefixPill?.textColor = t.accent
+        prefixPill?.layer?.borderColor = t.accent.cgColor
+        prefixPill?.layer?.backgroundColor = t.accent.withAlphaComponent(0.12).cgColor
     }
 
     func setStatus(_ text: String) { footer?.stringValue = text }
@@ -117,6 +124,9 @@ final class HaloWindowController: NSWindowController {
         // Control, the Window menu, and ⌘` show a meaningful label.
         window?.title = text
     }
+
+    /// Show/hide the prefix-armed indicator (driven by PrefixState.onArmedChange).
+    func setPrefixArmed(_ armed: Bool) { prefixPill?.isHidden = !armed }
 
     /// Rebuild the PROJECTS area from the given snapshot.
     /// Single source of sidebar truth — called on every onChange.
@@ -677,6 +687,20 @@ final class HaloWindowController: NSWindowController {
         dirLabel.lineBreakMode = .byTruncatingTail
         dirLabel.cell?.usesSingleLineMode = true
 
+        let pill = NSTextField(labelWithString: "PREFIX")
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        pill.font = Fonts.inst(9.5)
+        pill.alignment = .center
+        pill.textColor = theme.accent                         // color sync: theme.accent
+        pill.wantsLayer = true
+        pill.layer?.cornerRadius = 4
+        pill.layer?.borderWidth = 1
+        pill.layer?.borderColor = theme.accent.cgColor        // color sync: theme.accent
+        pill.layer?.backgroundColor = theme.accent.withAlphaComponent(0.12).cgColor
+        pill.isHidden = true
+        host.addSubview(pill)
+        prefixPill = pill
+
         host.addSubview(btn)
         host.addSubview(folder)
         host.addSubview(dirLabel)
@@ -695,6 +719,11 @@ final class HaloWindowController: NSWindowController {
             dirLabel.leadingAnchor.constraint(equalTo: folder.trailingAnchor, constant: 7),
             dirLabel.centerYAnchor.constraint(equalTo: host.centerYAnchor),
             dirLabel.trailingAnchor.constraint(lessThanOrEqualTo: host.trailingAnchor, constant: -10),
+
+            pill.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -12),
+            pill.centerYAnchor.constraint(equalTo: host.centerYAnchor),
+            pill.heightAnchor.constraint(equalToConstant: 16),
+            pill.widthAnchor.constraint(greaterThanOrEqualToConstant: 52),
         ])
 
         acc.view = host
@@ -913,5 +942,7 @@ private extension Comparable {
     wc.toggleSidebar(); wc.toggleSidebar()
 
     assert(wc.window?.contentView?.subviews.count ?? 0 >= 2, "sidebar + content present")
+    wc.setPrefixArmed(true)
+    wc.setPrefixArmed(false)   // toggling must not crash and leaves the pill hidden
     print("chromeSelfCheck OK")
 }
