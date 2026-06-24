@@ -62,6 +62,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func newWindowMenu() { newWindow(); NSApp.activate(ignoringOtherApps: true) }
 
+    // MARK: - Session switcher (Cmd-K / prefix-s)
+
+    /// Every live session across all windows/projects, as switcher rows.
+    /// M3 extends this by appending detached daemon sessions (detached: true).
+    func sessionRows() -> [SessionRow] {
+        var rows: [SessionRow] = []
+        for (wi, ctx) in windows.enumerated() {
+            let ws = ctx.workspace
+            for (pi, proj) in ws.projs.enumerated() {
+                for (si, tree) in proj.sessions.enumerated() {
+                    let title = tree.name ?? tree.focusedLabel
+                    let cwd = tree.focusedCwd.map { abbreviateHome($0) } ?? proj.name
+                    let win = windows.count > 1 ? "win \(wi + 1) · " : ""
+                    rows.append(SessionRow(
+                        title: title,
+                        subtitle: "\(win)\(proj.name) · \(cwd)",
+                        detached: false,
+                        activate: { [weak ctx] in
+                            ctx?.controller.window?.makeKeyAndOrderFront(nil)
+                            ctx?.workspace.selectSession(pi, si)
+                            NSApp.activate(ignoringOtherApps: true)
+                        }))
+                }
+            }
+        }
+        return rows
+    }
+
+    /// Open the fuzzy session switcher over the key window (Cmd-K / prefix-s).
+    func showSwitcher() {
+        guard let ctx = active, let host = ctx.controller.window?.contentView else { return }
+        if host.subviews.contains(where: { $0 is SwitcherOverlay }) { return }   // already open
+        let overlay = SwitcherOverlay(theme: theme, rows: sessionRows()) { [weak host] in
+            host?.subviews.compactMap { $0 as? SwitcherOverlay }.forEach { $0.removeFromSuperview() }
+        }
+        overlay.frame = host.bounds
+        host.addSubview(overlay)
+        ctx.controller.window?.makeFirstResponder(overlay)
+    }
+
+    @objc func showSwitcherMenu() { showSwitcher() }
+
     // MARK: - Window-state persistence
 
     private static var windowsFile: String {
@@ -394,6 +436,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ws.activeTree.focused?.startSearch(); return nil
             // ⌘B: toggle sidebar
             case "b":  ctx.controller.toggleSidebar(); return nil
+            // ⌘K: open the session switcher (also reachable via M1's prefix-s)
+            case "k" where !shift:  self.showSwitcher(); return nil
             // ⌘]/⌘[: focus next/prev pane within the active session
             case "]":  ws.activeTree.focusNext(); return nil
             case "[":  ws.activeTree.focusPrev(); return nil
@@ -447,8 +491,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .nextSession: ws.nextSession()
         case .prevSession: ws.prevSession()
         case .rename:      promptRenameActiveProject()
-        case .switcher, .detach, .kill:
-            NSSound.beep()   // stub until M2 (switcher) / M3 (detach, kill)
+        case .switcher: showSwitcher()
+        case .detach, .kill:
+            NSSound.beep()   // stub until M3 (detach, kill)
         }
     }
 
