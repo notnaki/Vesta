@@ -21,6 +21,8 @@ libghostty statically links, among others:
 Bundled fonts (SIL Open Font License 1.1)
   Geist Mono   — Copyright (c) 2023 Vercel, Inc.
   Martian Mono — Copyright (c) 2018 Evil Martians
+  Redaction    — Copyright (c) 2019 MCKL Inc. (redaction.us; Titus Kaphar &
+                 Reginald Dwayne Betts' "The Redaction", MoMA PS1)
 
   This Font Software is licensed under the SIL Open Font License, Version 1.1.
   The full OFL 1.1 text is available at: https://openfontlicense.org

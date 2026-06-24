@@ -8,7 +8,9 @@ enum Fonts {
         guard let dir = Bundle.module.url(forResource: "Fonts", withExtension: nil),
               let urls = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
         else { return }
-        for u in urls where u.pathExtension == "ttf" {
+        // .ttf (Geist/Martian) + .otf (Redaction grades). Registered process-wide,
+        // so libghostty can use them too (e.g. `font-family = "Redaction 50"`).
+        for u in urls where ["ttf", "otf"].contains(u.pathExtension.lowercased()) {
             CTFontManagerRegisterFontsForURL(u as CFURL, .process, nil)
         }
     }
