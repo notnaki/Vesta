@@ -46,6 +46,7 @@ final class Workspace {
     private var attention: Set<ObjectIdentifier> = []
 
     var activeTree: PaneTree { projs[activeP].sessions[activeS] }
+    var totalSessions: Int { projs.reduce(0) { $0 + $1.sessions.count } }
 
     let container = NSView()
     private let body = NSView()

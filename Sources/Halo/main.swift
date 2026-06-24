@@ -440,14 +440,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch e.charactersIgnoringModifiers {
             // Split panes (unchanged)
             case "d":  self.workspace.activeTree.splitFocused(shift ? .horizontal : .vertical, cwd: self.workspace.activeTree.focusedCwd); return nil
-            // ⌘W: close focused pane if session has >1 pane, else close session; ⌘⇧W: close session
+            // ⌘W: pane → session → window (cascade). ⌘⇧W: close session.
             case "w":
+                let ws = self.workspace
                 if shift {
-                    self.workspace.closeSession(self.workspace.activeP, self.workspace.activeS)
-                } else if self.workspace.activeTree.paneCount > 1 {
-                    self.workspace.activeTree.closeFocused()
+                    ws.closeSession(ws.activeP, ws.activeS)
+                } else if ws.activeTree.paneCount > 1 {
+                    ws.activeTree.closeFocused()               // 1) close the pane
+                } else if ws.totalSessions > 1 {
+                    ws.closeSession(ws.activeP, ws.activeS)     // 2) close the session
                 } else {
-                    self.workspace.closeSession(self.workspace.activeP, self.workspace.activeS)
+                    self.controller.window?.performClose(nil)  // 3) last one → close the window
                 }
                 return nil
             // ⌘B: toggle sidebar
