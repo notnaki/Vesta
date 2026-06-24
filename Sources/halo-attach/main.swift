@@ -71,6 +71,29 @@ func send(_ f: ClientFrame) {
         while off < raw.count { let n = write(sock, raw.baseAddress!.advanced(by: off), raw.count - off); if n <= 0 { break }; off += n }
     }
 }
+
+// stdout is the ghostty PTY. We set the fd non-blocking for stdin, and in a PTY the
+// stdin/stdout share one open-file-description, so a full output buffer returns EAGAIN.
+// FileHandle.write(_:) THROWS an uncaught NSException on EAGAIN/short writes — which
+// crashes the relay (ghostty then reports "failed to launch"). Use a raw write loop
+// that waits for writable on EAGAIN instead of crashing.
+func writeOut(_ data: Data) {
+    data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+        guard let base = raw.baseAddress else { return }
+        var off = 0
+        while off < raw.count {
+            let n = write(STDOUT_FILENO, base + off, raw.count - off)
+            if n > 0 { off += n; continue }
+            if n < 0 && errno == EINTR { continue }
+            if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
+                var pfd = pollfd(fd: STDOUT_FILENO, events: Int16(POLLOUT), revents: 0)
+                if poll(&pfd, 1, 5000) <= 0 { break }   // stuck reader → drop this chunk
+                continue
+            }
+            break   // EPIPE/other → reader gone; stop writing (shell stays under daemon)
+        }
+    }
+}
 let (cols0, rows0) = currentWinsize()
 send(.hello(paneID: paneID, cols: cols0, rows: rows0))
 
@@ -122,11 +145,11 @@ outer: while true {
             switch f {
             case let .snapshot(screen, scrollback, images):
                 // Restore scrollback first, then current screen, then replay images.
-                FileHandle.standardOutput.write(scrollback)
-                FileHandle.standardOutput.write(screen)
-                FileHandle.standardOutput.write(images)
+                writeOut(scrollback)
+                writeOut(screen)
+                writeOut(images)
             case let .output(bytes):
-                FileHandle.standardOutput.write(bytes)
+                writeOut(bytes)
             case .exited:
                 break outer                                  // shell exited → relay ends
             case .needsUpdate:
