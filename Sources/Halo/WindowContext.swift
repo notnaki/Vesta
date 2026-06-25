@@ -26,20 +26,19 @@ final class WindowContext {
     private let attnMinTicks = 3
 
     init(theme: Theme,
-         workspace existing: Workspace? = nil,
+         store: SessionStore,
          onBecomeKey: @escaping (WindowContext) -> Void,
          onClose: @escaping (WindowContext) -> Void) {
         self.onBecomeKey = onBecomeKey
         self.onClose = onClose
 
-        // Shared-sidebar Phase 1: the workspace (projects + sessions) is app-owned and
-        // reused across windows, so closing a window never destroys sessions. Only the
-        // first window builds it; later windows / re-opens borrow the same instance.
-        let ws: Workspace
-        if let existing {
-            ws = existing
-        } else {
-            ws = Workspace(theme: theme)
+        // Each window gets its OWN Workspace (own active selection + display body) over
+        // the shared SessionStore. So window A can view untitled→2 while window B views
+        // untitled→1 — both live, different sessions. The store is app-owned, so closing
+        // a window drops the view, never the sessions. First window to see an empty pool
+        // populates it (config projects + persisted state).
+        let ws = Workspace(theme: theme, store: store)
+        if store.projs.isEmpty {
             loadProjects(GhosttyApp.shared.settings, into: ws)
             ws.restorePersisted()
         }
@@ -60,8 +59,8 @@ final class WindowContext {
             onRemoveProject:   { [weak ws] p in ws?.removeProject(p) },
             onNewWorktree:     { [weak ws] p, branch in ws?.newWorktreeSession(p, branch: branch) })
 
-        // self is fully initialized past this point.
-        ws.onChange = { [weak self] in self?.refresh(); self?.onPersist?() }
+        // self is fully initialized past this point. Cross-window refresh + persistence
+        // flow through store.broadcast (wired by AppDelegate), not a per-window onChange.
         let nc = NotificationCenter.default
         let win = controller.window
         observers.append(nc.addObserver(forName: NSWindow.didBecomeKeyNotification, object: win, queue: .main) { [weak self] _ in
@@ -79,7 +78,7 @@ final class WindowContext {
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         refresh()
-        workspace.focusActive()
+        workspace.mountLive()   // show this window's active session right away
     }
 
     func applyTheme(_ t: Theme) {

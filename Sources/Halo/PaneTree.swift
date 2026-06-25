@@ -226,15 +226,6 @@ final class PaneTree {
         return newLeaf.content as! TerminalPane
     }
 
-    /// Open an existing session (`paneID`) as a second pane next to the focused
-    /// one — a live mirror. The daemon broadcasts that paneID's output to both.
-    @discardableResult
-    func mirrorFocused(paneID: String) -> TerminalPane {
-        let newLeaf = makeTerminalLeaf(cwd: nil, paneID: paneID)
-        splitAndAttach(newLeaf, split: .vertical)
-        return newLeaf.content as! TerminalPane
-    }
-
     /// Open a browser pane next to the focused pane (vertical split by default).
     func openBrowser(url: URL) {
         let browser = BrowserPane(url: url, theme: theme)

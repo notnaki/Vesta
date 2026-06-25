@@ -8,7 +8,7 @@ func controlSocketPath() -> String {
     return base + "/control.sock"
 }
 
-let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser", "reload", "search", "sessions", "kill"]
+let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser", "reload", "search", "kill", "new-window"]
 
 // MARK: - Socket helpers
 
@@ -55,6 +55,9 @@ final class ControlServer: @unchecked Sendable {
     private var listenFD: Int32 = -1
     /// Live config reload (set by AppDelegate; re-themes chrome + surfaces).
     var onReload: (@MainActor () -> Void)?
+    /// Open a new window in THIS running instance (so `halo` with the app open opens a
+    /// window instead of launching a second instance). Set by AppDelegate.
+    var onNewWindow: (@MainActor () -> Void)?
 
     init(workspaceProvider: @escaping @MainActor () -> Workspace?) { self.workspaceProvider = workspaceProvider }
 
@@ -116,12 +119,11 @@ final class ControlServer: @unchecked Sendable {
     }
 
     @MainActor private func dispatch(_ cmd: String, _ args: [String]) -> [String: Any] {
-        // Daemon-only verbs: don't need a workspace/window — talk straight to halod.
+        // App-level verbs that don't need a current window.
         switch cmd {
-        case "sessions":
-            let list = MuxClient.sessions()
-            return ["ok": true, "sessions": list.map { ["id": $0.id, "name": $0.name as Any,
-                "cwd": $0.cwd as Any, "alive": $0.alive, "attached": $0.attachedCount] }]
+        case "new-window":
+            onNewWindow?()
+            return ["ok": true]
         case "kill":
             guard let id = args.first else { return ["ok": false, "error": "kill: <id> required"] }
             MuxClient.kill(paneID: id)
@@ -199,6 +201,18 @@ final class ControlServer: @unchecked Sendable {
 
 // MARK: - CLI client
 
+/// True if a Halo instance is already listening on the control socket (used so a bare
+/// `halo` opens a window in the running app instead of launching a second instance).
+func controlSocketAlive() -> Bool {
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0); if fd < 0 { return false }
+    defer { close(fd) }
+    var addr = makeSockaddr(controlSocketPath())
+    let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+    return withUnsafePointer(to: &addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) == 0 }
+    }
+}
+
 func runControlCLI(_ args: [String]) -> Int32 {
     guard let verb = args.first else { return 1 }
     let rest = Array(args.dropFirst())
@@ -233,14 +247,6 @@ func runControlCLI(_ args: [String]) -> Int32 {
 
     if verb == "list", let panes = obj["panes"] as? [Any] {
         for p in panes { print(p) }
-    } else if verb == "sessions", let list = obj["sessions"] as? [[String: Any]] {
-        for s in list {
-            let id = s["id"] as? String ?? "?"
-            let name = s["name"] as? String ?? "-"
-            let alive = (s["alive"] as? Bool ?? false) ? "alive" : "dead"
-            let att = s["attached"] as? Int ?? 0
-            print("\(id)\t\(name)\t\(alive)\tattached=\(att)")
-        }
     } else if verb == "capture", let text = obj["text"] as? String {
         print(text)
     } else if verb == "open", let path = obj["path"] as? String {
@@ -260,7 +266,6 @@ func printUsage() {
       halo                  launch the GUI app
       halo <verb> [args]    drive the running app over the control socket
       halo help             show this message
-      halo attach ssh://host[:port] [session]   attach to a session on another machine
 
     Control verbs:
       split [-h|--horizontal] [--cwd DIR]   split the focused pane (default vertical)
@@ -276,7 +281,6 @@ func printUsage() {
       worktree <branch> [--base <ref>]      open a git-worktree-isolated session on <branch>
       browser [url|port]                    open an embedded browser pane (port → http://localhost:PORT)
       reload                                re-read the config and apply colors/font/theme live
-      sessions                              list daemon sessions (id, name, alive, attached)
       kill <id>                             terminate a session's shell under the daemon
 
     Config (in your ghostty config; libghostty ignores the halo- keys):
@@ -291,8 +295,6 @@ func printUsage() {
     Colors also sync from your ghostty background/foreground/palette.
 
     Socket: ~/Library/Application Support/halo/control.sock
-    Remote: `halo attach ssh://host` self-deploys halod/halo-attach over scp
-            when missing/outdated (SSH-forwarded unix socket; no TCP listener).
     """)
 }
 

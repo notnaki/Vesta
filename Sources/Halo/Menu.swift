@@ -60,8 +60,6 @@ func makeMainMenu(target: AppDelegate) -> NSMenu {
     viewItem.submenu = view
     view.addItem(withTitle: "Toggle Sidebar", action: #selector(AppDelegate.toggleSidebarMenu), keyEquivalent: "b")
         .target = target
-    view.addItem(withTitle: "Switch Session…", action: #selector(AppDelegate.showSwitcherMenu), keyEquivalent: "k")
-        .target = target
     // No key equivalent: explicit kill must not be confused with ⌘W (which detaches).
     view.addItem(withTitle: "Kill Session", action: #selector(AppDelegate.killSessionMenu), keyEquivalent: "")
         .target = target

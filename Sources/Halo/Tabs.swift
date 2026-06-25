@@ -30,12 +30,24 @@ struct Proj {
     var color: NSColor? = nil    // custom tint, set via the sidebar context menu
 }
 
+/// App-owned shared session pool: holds the projects + their sessions (PaneTrees own
+/// the live ghostty surfaces), so they survive any window closing. Every window's
+/// Workspace reads/writes `projs` here, and `broadcast` refreshes all open windows —
+/// that's what makes the sidebar global. Per-window state (active selection, the
+/// display body) stays in Workspace, so each window can view a DIFFERENT session.
+@MainActor
+final class SessionStore {
+    var projs: [Proj] = []
+    var broadcast: () -> Void = {}
+}
+
 /// Owns projects; each project owns sessions (PaneTrees).
 /// Container = body only — the active session's rootView, swapped on change.
 /// No top tab strip.
 @MainActor
 final class Workspace {
-    private(set) var projs: [Proj] = []
+    let store: SessionStore
+    var projs: [Proj] { get { store.projs } set { store.projs = newValue } }
     private(set) var activeP = 0
     private(set) var activeS = 0
 
@@ -60,7 +72,8 @@ final class Workspace {
     var onNewProject:     (() -> Void)?
     var onChange:         (() -> Void)?
 
-    init(theme: Theme) {
+    init(theme: Theme, store: SessionStore) {
+        self.store = store
         self.theme = theme
         container.wantsLayer = true
         container.layer?.backgroundColor = theme.background.cgColor
@@ -114,26 +127,6 @@ final class Workspace {
 
     func newSession(_ p: Int) {
         addSession(p, cwd: NSHomeDirectory())
-    }
-
-    /// Mirror an existing session (by paneID) as a new pane in the active session.
-    /// Used by the switcher's "mirror here" action — both panes show the same shell.
-    func mirror(paneID: String) {
-        activeTree.mirrorFocused(paneID: paneID)
-        handleChange()
-    }
-
-    /// Open a session that reattaches an existing daemon paneID (from the switcher's
-    /// detached list). Mirrors addSession but seeds the tree's root paneID so
-    /// halo-attach <paneID> reattaches the live shell.
-    func reattachSession(_ paneID: String, cwd: String?) {
-        let p = activeP
-        let tree = makeTree(cwd: cwd, paneID: paneID)
-        projs[p].sessions.append(tree)
-        projs[p].expanded = true
-        activeP = p
-        activeS = projs[p].sessions.count - 1
-        showActive()
     }
 
     func newWorktreeSession(_ p: Int, branch: String, base: String? = nil) {
@@ -229,6 +222,10 @@ final class Workspace {
     func closeSession(_ p: Int, _ s: Int) {
         guard projs.indices.contains(p), projs[p].sessions.indices.contains(s) else { return }
         let closing = projs[p].sessions[s]
+        // Closing a session KILLS its daemon shell — the sidebar is the single source of
+        // truth, so there are no orphaned detached sessions. (Window-close still only
+        // detaches, since it doesn't drop the PaneTree from the shared store.)
+        closing.paneIDs.forEach { MuxClient.kill(paneID: $0) }
         // If this was a worktree session, best-effort remove its worktree dir
         // off-main (non-force → dirty worktrees are left intact, never destroyed).
         if let branch = worktreeBranch[ObjectIdentifier(closing)] {
@@ -536,17 +533,57 @@ final class Workspace {
     }
 
     private func showActive() {
+        mountLive()
+        attention.remove(ObjectIdentifier(activeTree))   // clear ring for the focused session
+        handleChange()                                   // broadcast → other windows reconcile
+    }
+
+    // ── Multi-window live/frozen (a session's rootView is one NSView → one window) ──
+
+    /// True if THIS window currently hosts the live terminal for its active session
+    /// (vs. another window holding the rootView, in which case we show a frozen snapshot).
+    var hostsLive: Bool { activeTree.rootView.superview === body }
+
+    /// Put our active session's live rootView into our body (stealing it from any other
+    /// window that had it). Does NOT broadcast — call from reconcile to avoid a loop.
+    func mountLive() {
         body.subviews.forEach { $0.removeFromSuperview() }
         let v = activeTree.rootView
         v.frame = body.bounds
         v.autoresizingMask = [.width, .height]
         body.addSubview(v)
-        // Make the active session's focused pane first responder so you can type
-        // immediately without clicking it.
         activeTree.focusActivePane()
-        // Clear attention ring for the now-focused session.
-        attention.remove(ObjectIdentifier(activeTree))
-        handleChange()
+    }
+
+    /// Our active session is live in another window → show a muted frozen snapshot of its
+    /// current screen here instead of a blank. ponytail: plain-text capture (libghostty's
+    /// read strips colors); refreshes whenever this window reconciles.
+    func showFrozen() {
+        body.subviews.forEach { $0.removeFromSuperview() }
+        let snap = NSView(); snap.wantsLayer = true
+        snap.layer?.backgroundColor = theme.background.cgColor
+        snap.frame = body.bounds; snap.autoresizingMask = [.width, .height]
+        let scroll = NSScrollView(frame: snap.bounds)
+        scroll.autoresizingMask = [.width, .height]; scroll.drawsBackground = false
+        scroll.hasVerticalScroller = false
+        let tv = NSTextView(frame: scroll.bounds)
+        tv.autoresizingMask = [.width]
+        tv.isEditable = false; tv.isSelectable = false; tv.drawsBackground = false
+        tv.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        tv.textColor = NSColor(white: 0.5, alpha: 1)              // muted
+        tv.textContainerInset = NSSize(width: 10, height: 10)
+        tv.string = activeTree.focused?.capture(scrollback: false) ?? ""
+        scroll.documentView = tv
+        snap.addSubview(scroll)
+        body.addSubview(snap)
+    }
+
+    /// Decide this window's display: the focused (preferLive) window — or the sole viewer
+    /// of an unowned session — shows live; a window whose session is live elsewhere freezes.
+    func reconcile(preferLive: Bool) {
+        if preferLive || activeTree.rootView.superview == nil { mountLive() }
+        else if !hostsLive { showFrozen() }
+        // else: already hosting live here → leave it
     }
 
     /// Focus the active session's pane (call after the window becomes key at launch).
@@ -561,7 +598,9 @@ final class Workspace {
     }
 
     private func handleChange() {
-        onChange?()
+        // Shared pool changed → refresh every window's sidebar + persist (AppDelegate
+        // wires store.broadcast). One path, so all windows stay in sync.
+        store.broadcast()
     }
 }
 

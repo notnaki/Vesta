@@ -2,7 +2,7 @@ import AppKit
 
 /// A prefix-mode action. Every case maps 1:1 onto an action that ALREADY exists
 /// in Workspace/PaneTree (dispatched in Task 1.4) — prefix mode adds no new pane
-/// plumbing. `detach`/`kill`/`switcher` are wired into the keytable + dispatch
+/// plumbing. `detach`/`kill` are wired into the keytable + dispatch
 /// now but stubbed (beep) until Milestones 2–3.
 enum PrefixAction: Equatable {
     case splitVertical      // %  → ws.activeTree.splitFocused(.vertical, …)
@@ -16,7 +16,6 @@ enum PrefixAction: Equatable {
     case nextSession        // n  → ws.nextSession()
     case prevSession        // p  → ws.prevSession()
     case rename             // ,  → rename the active session's project
-    case switcher           // s  → (stub until M2)
     case detach             // d  → (stub until M3)
     case kill               // x  → (stub until M3)
 }
@@ -25,7 +24,7 @@ enum PrefixAction: Equatable {
 /// `halo-prefix-bind` overrides. Keys are the SINGLE-character token a user
 /// presses AFTER the prefix; arrows use the tokens "left"/"down"/"up"/"right".
 /// tmux muscle memory: % / " split, h j k l + arrows navigate, z zoom, c new,
-/// n/p next/prev, , rename, s switcher, d detach, x kill.
+/// n/p next/prev, , rename, d detach, x kill.
 let defaultPrefixKeytable: [String: PrefixAction] = [
     "%": .splitVertical,
     "\"": .splitHorizontal,
@@ -38,7 +37,6 @@ let defaultPrefixKeytable: [String: PrefixAction] = [
     "n": .nextSession,
     "p": .prevSession,
     ",": .rename,
-    "s": .switcher,
     "d": .detach,
     "x": .kill,
 ]
@@ -58,7 +56,6 @@ private func prefixActionNamed(_ name: String) -> PrefixAction? {
     case "next-session": return .nextSession
     case "prev-session": return .prevSession
     case "rename": return .rename
-    case "switcher": return .switcher
     case "detach": return .detach
     case "kill": return .kill
     default: return nil
@@ -163,9 +160,9 @@ final class PrefixState {
 // MARK: - Self-check (pure logic: keytable parse + resolve)
 
 func prefixKeytableSelfCheck() {
-    // Default table covers all 14 actions (18 entries: 14 actions, 4 arrow aliases).
+    // Default table covers all 13 actions (17 entries: 13 actions, 4 arrow aliases).
     let d = defaultPrefixKeytable
-    assert(d.count == 18, "defaultPrefixKeytable should have 18 entries (14 actions, 4 arrow aliases)")
+    assert(d.count == 17, "defaultPrefixKeytable should have 17 entries (13 actions, 4 arrow aliases)")
     assert(d["%"] == .splitVertical)
     assert(d["\""] == .splitHorizontal)
     assert(d["h"] == .focusLeft)
@@ -181,7 +178,6 @@ func prefixKeytableSelfCheck() {
     assert(d["n"] == .nextSession)
     assert(d["p"] == .prevSession)
     assert(d[","] == .rename)
-    assert(d["s"] == .switcher)
     assert(d["d"] == .detach)
     assert(d["x"] == .kill)
     // Default table resolves the canonical tmux bindings.
@@ -195,7 +191,6 @@ func prefixKeytableSelfCheck() {
     assert(resolvePrefix("n", in: d) == .nextSession, "n next")
     assert(resolvePrefix("p", in: d) == .prevSession, "p prev")
     assert(resolvePrefix(",", in: d) == .rename, ", renames")
-    assert(resolvePrefix("s", in: d) == .switcher, "s switcher")
     assert(resolvePrefix("d", in: d) == .detach, "d detach")
     assert(resolvePrefix("x", in: d) == .kill, "x kill")
     // Unbound key → nil (caller cancels).

@@ -6,7 +6,7 @@ if argv.first == "selfcheck" {
     // Pure-logic checks only. PaneTree/Chrome spawn real ghostty surfaces,
     // which need a live app + run loop — exercised by actually launching the app.
     // workspaceSelfCheck tests the Proj/SidebarProject data model without ghostty.
-    _ = ghosttyConfigSelfCheck(); controlSelfCheck(); gitSelfCheck(); portsSelfCheck(); workspaceSelfCheck(); worktreeSelfCheck(); browserSelfCheck(); prefixKeytableSelfCheck(); fuzzySelfCheck(); sessionNameSelfCheck(); muxProtocolSelfCheck(); muxPathsSelfCheck(); remoteAttachSelfCheck()
+    _ = ghosttyConfigSelfCheck(); controlSelfCheck(); gitSelfCheck(); portsSelfCheck(); workspaceSelfCheck(); worktreeSelfCheck(); browserSelfCheck(); prefixKeytableSelfCheck(); sessionNameSelfCheck(); muxProtocolSelfCheck(); muxPathsSelfCheck()
     // chromeSelfCheck creates AppKit objects (HaloWindowController → HaloConfig.shared →
     // GhosttyApp.shared). GhosttyApp.shared calls NSApp.isActive; NSApp is nil until
     // NSApplication.shared is first touched. Touch it here so GhosttyApp.shared doesn't crash.
@@ -17,20 +17,22 @@ if argv.first == "selfcheck" {
 if let verb = argv.first, verb == "help" || verb == "--help" || verb == "-h" {
     printUsage(); exit(0)
 }
-if argv.first == "attach" {
-    exit(runRemoteAttach(Array(argv.dropFirst())))
-}
 if let verb = argv.first, controlVerbs.contains(verb) {
     exit(runControlCLI(argv))
+}
+// Bare `halo` while an instance is already running → open a new window in it rather
+// than launching a second app instance.
+if argv.isEmpty, controlSocketAlive() {
+    exit(runControlCLI(["new-window"]))
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    // Shared-sidebar Phase 1: ONE app-owned Workspace (projects + sessions) shared by
-    // every window. Held strongly here so it outlives any window — closing a window is
-    // just closing a view, never destroying sessions. Windows keep per-window chrome +
-    // caches but render this same workspace.
-    var sharedWS: Workspace?
+    // Shared sidebar: ONE app-owned session pool (projects + sessions) shared by every
+    // window, so closing a window drops the view but never the sessions. Each window has
+    // its OWN Workspace VIEW over this store (own active selection + display body), so
+    // different windows can show different sessions, both live.
+    let store = SessionStore()
     var windows: [WindowContext] = []
     weak var lastKey: WindowContext?
     var active: WindowContext? { lastKey ?? windows.first }
@@ -50,17 +52,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     func newWindow() -> WindowContext {
         let prev = active?.controller.window ?? windows.last?.controller.window
-        let ctx = WindowContext(theme: theme, workspace: sharedWS,
-            onBecomeKey: { [weak self] c in self?.lastKey = c },
+        // Wire the cross-window broadcast once: any pool change refreshes every window's
+        // sidebar, reconciles which window shows each session live vs frozen, and persists.
+        store.broadcast = { [weak self] in guard let self else { return }
+                            self.windows.forEach { $0.refresh() }; self.reconcileDisplay(); self.scheduleSave() }
+        let ctx = WindowContext(theme: theme, store: store,
+            onBecomeKey: { [weak self] c in guard let self else { return }
+                                            self.lastKey = c
+                                            self.reconcileDisplay() },   // live follows focus
             onClose:     { [weak self] c in
                                             guard let self else { return }
-                                            // The shared workspace lives in sharedWS, so closing a window
-                                            // never loses sessions — just drop the view and persist state.
+                                            // Sessions live in the shared store, so closing a window
+                                            // never loses them — just drop the view and persist.
                                             self.windows.removeAll { $0 === c }
                                             if self.lastKey === c { self.lastKey = self.windows.last }
                                             self.scheduleSave() })
         ctx.onPersist = { [weak self] in self?.scheduleSave() }
-        sharedWS = ctx.workspace      // retain the (possibly newly-built) shared workspace
         windows.append(ctx)
         lastKey = ctx
         // Only the first window restores/saves its frame; later ones cascade off it.
@@ -72,76 +79,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return ctx
     }
 
-    @objc func newWindowMenu() {
-        // Phase 1: one shared workspace → one container, which can only live in one
-        // window. So ⌘N focuses the existing window instead of opening a 2nd that would
-        // steal the terminal. Real multi-window (Arc-style frozen snapshots) is Phase 2.
-        if let w = active?.controller.window { w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
-        newWindow(); NSApp.activate(ignoringOtherApps: true)
+    // ⌘N opens a real second window. Both share the one session pool/sidebar; each
+    // views its own active session (different sessions show live in each window).
+    @objc func newWindowMenu() { newWindow(); NSApp.activate(ignoringOtherApps: true) }
+
+    /// Decide, across all windows, which shows each session live vs. a frozen snapshot.
+    /// A session's terminal is one NSView → one window. The KEY window always shows its
+    /// session live; a window whose session is live in another window shows frozen; a
+    /// window that's the sole viewer of an unowned session takes it live. So when two
+    /// windows view the same session, live follows focus.
+    func reconcileDisplay() {
+        guard let key = active else { return }
+        key.workspace.reconcile(preferLive: true)
+        for w in windows where w !== key { w.workspace.reconcile(preferLive: false) }
     }
 
-    // MARK: - Session switcher (Cmd-K / prefix-s)
-
-    /// Every live session across all windows/projects, as switcher rows.
-    /// M3 extends this by appending detached daemon sessions (detached: true).
-    func sessionRows() -> [SessionRow] {
-        var rows: [SessionRow] = []
-        for (wi, ctx) in windows.enumerated() {
-            let ws = ctx.workspace
-            for (pi, proj) in ws.projs.enumerated() {
-                for (si, tree) in proj.sessions.enumerated() {
-                    let title = tree.name ?? tree.focusedLabel
-                    let cwd = tree.focusedCwd.map { abbreviateHome($0) } ?? proj.name
-                    let win = windows.count > 1 ? "win \(wi + 1) · " : ""
-                    rows.append(SessionRow(
-                        title: title,
-                        subtitle: "\(win)\(proj.name) · \(cwd)",
-                        detached: false,
-                        activate: { [weak ctx] in
-                            ctx?.controller.window?.makeKeyAndOrderFront(nil)
-                            ctx?.workspace.selectSession(pi, si)
-                            NSApp.activate(ignoringOtherApps: true)
-                        },
-                        paneID: tree.focusedPaneID))
-                }
-            }
-        }
-        // Detached sessions (live under halod but not shown in any pane) — so they're
-        // never invisible. Dedup against every in-app paneID, then append the orphans.
-        let shownIDs = Set(windows.flatMap { $0.workspace.projs.flatMap { $0.sessions.flatMap { $0.paneIDs } } })
-        for s in MuxClient.sessions() where s.alive && !shownIDs.contains(s.id) {
-            rows.append(SessionRow(
-                title: s.name ?? s.cwd ?? s.id,
-                subtitle: "detached",
-                detached: true,
-                activate: { [weak self] in self?.reattachDetached(s.id, cwd: s.cwd) },
-                paneID: s.id))
-        }
-        return rows
-    }
-
-    // M1 prefix keytable entry points (same code, not a parallel path):
-    //   prefix-s → showSwitcher()
-    //   prefix-, → promptRenameActiveSession() → Workspace.renameSession(activeP, activeS, …)
-    /// Open the fuzzy session switcher over the key window (Cmd-K / prefix-s).
-    func showSwitcher() {
-        guard let ctx = active, let host = ctx.controller.window?.contentView else { return }
-        if host.subviews.contains(where: { $0 is SwitcherOverlay }) { return }   // already open
-        let overlay = SwitcherOverlay(theme: theme, rows: sessionRows()) { [weak host] in
-            host?.subviews.compactMap { $0 as? SwitcherOverlay }.forEach { $0.removeFromSuperview() }
-        }
-        // M4: Cmd-Enter mirrors the highlighted session's focused pane into the active window.
-        overlay.onMirror = { [weak ctx, weak host] row in
-            guard let pid = row.paneID else { return }
-            ctx?.workspace.mirror(paneID: pid)
-            host?.subviews.compactMap { $0 as? SwitcherOverlay }.forEach { $0.removeFromSuperview() }
-        }
-        overlay.frame = host.bounds
-        host.addSubview(overlay)
-        ctx.controller.window?.makeFirstResponder(overlay)
-    }
-
-    @objc func showSwitcherMenu() { showSwitcher() }
 
     // MARK: - Window-state persistence
 
@@ -177,11 +129,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Persist the single shared workspace (one entry). It's app-owned (`sharedWS`), so
-    /// it survives window close and is saved whether or not any window is open — that's
-    /// what makes the session restore on next launch.
+    /// Persist the shared session pool (one entry). Serialized via any live window's
+    /// Workspace (they share the store's projs). If no window is open, the last save on
+    /// window-close already wrote the file, so skipping here is safe.
     func saveWindows() {
-        guard let ws = sharedWS,
+        guard let ws = (active ?? windows.first)?.workspace,
               let data = try? JSONSerialization.data(withJSONObject: [ws.serialize()], options: [.prettyPrinted]) else { return }
         try? data.write(to: URL(fileURLWithPath: Self.windowsFile), options: .atomic)
     }
@@ -198,6 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         server = ControlServer(workspaceProvider: { [weak self] in self?.active?.workspace })
         server.onReload = { [weak self] in self?.reloadConfig() }
+        server.onNewWindow = { [weak self] in self?.newWindow(); NSApp.activate(ignoringOtherApps: true) }
         server.start()
 
         installKeybinds()
@@ -401,16 +354,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// equivalent — Cmd-W only detaches).
     @objc func killSessionMenu() { active?.workspace.activeTree.killFocusedSession() }
 
-    /// Reattach a detached daemon session (chosen from the switcher): open a new
-    /// session whose tree carries that paneID so halo-attach <paneID> reattaches it,
-    /// then bring the window forward.
-    func reattachDetached(_ paneID: String, cwd: String?) {
-        guard let ctx = active else { return }
-        ctx.workspace.reattachSession(paneID, cwd: cwd)
-        ctx.controller.window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
     // MARK: - "Default terminal" integration (open folders / Finder Services)
 
     private var pendingOpenDirs: [String] = []
@@ -493,8 +436,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ws.activeTree.focused?.startSearch(); return nil
             // ⌘B: toggle sidebar
             case "b":  ctx.controller.toggleSidebar(); return nil
-            // ⌘K: open the session switcher (also reachable via M1's prefix-s)
-            case "k" where !shift:  self.showSwitcher(); return nil
             // ⌘]/⌘[: focus next/prev pane within the active session
             case "]":  ws.activeTree.focusNext(); return nil
             case "[":  ws.activeTree.focusPrev(); return nil
@@ -548,7 +489,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .nextSession: ws.nextSession()
         case .prevSession: ws.prevSession()
         case .rename:      promptRenameActiveSession()
-        case .switcher: showSwitcher()
         // Detach: close the pane → relay EOFs → shell lives on under halod.
         case .detach: ws.activeTree.closeFocused()
         // Kill: terminate the shell under halod, then close the pane locally.

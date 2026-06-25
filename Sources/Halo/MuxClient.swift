@@ -28,21 +28,6 @@ enum MuxClient {
             while off < raw.count { let n = write(fd, raw.baseAddress!.advanced(by: off), raw.count - off); if n <= 0 { break }; off += n } }
     }
 
-    /// One-shot `list` → the daemon's session table (empty if daemon is down).
-    static func sessions() -> [SessionInfo] {
-        guard let fd = connect() else { return [] }
-        defer { close(fd) }
-        send(fd, .list)
-        var buf = Data(); var tmp = [UInt8](repeating: 0, count: 65536)
-        // Read until one full frame decodes (the daemon replies promptly).
-        for _ in 0..<100 {
-            let k = read(fd, &tmp, tmp.count); if k <= 0 { break }
-            buf.append(Data(tmp[0..<k]))
-            if case let .sessions(list)? = decodeServerFrame(from: &buf) { return list }
-        }
-        return []
-    }
-
     /// Kill a specific session by paneID: attach (hello) then send kill.
     static func kill(paneID: String) {
         guard let fd = connect() else { return }
