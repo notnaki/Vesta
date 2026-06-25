@@ -129,6 +129,7 @@ final class GhosttyApp {
 
         let parsed = loadGhosttyConfig()
         settings = parsed.settings
+        for (k, v) in luaConfigOverrides { settings[k] = v }   // config-in-Lua: Lua wins over the file
         HaloConfig.refresh()   // rebuild the cached halo-* knobs (fonts/width/etc.)
         let hc = HaloConfig.shared
         var t = GhosttyApp.makeTheme(config: cfg, accent: hc.accent ?? parsed.theme.accent)

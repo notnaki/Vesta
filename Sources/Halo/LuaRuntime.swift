@@ -24,6 +24,7 @@ nonisolated(unsafe) var luaPanel: ([PanelLine], PanelOpts) -> Int = { _, _ in 0 
 nonisolated(unsafe) var luaClosePanel: (Int) -> Void = { _ in }                            // halo.close
 nonisolated(unsafe) var luaClearPanels: () -> Void = {}                                     // reset on reload
 nonisolated(unsafe) var luaShowPrompt: (String, Int32) -> Void = { _, _ in }               // halo.prompt
+nonisolated(unsafe) var luaConfigOverrides: [String: String] = [:]                         // halo.set (Lua wins)
 
 // Pop the function at stack slot 2 into the registry and return its ref (for on/command/bind).
 private func refFunctionArg2(_ L: OpaquePointer?) -> Int32 {
@@ -57,6 +58,18 @@ private func l_halo_send(_ L: OpaquePointer?) -> Int32 {
 }
 private func l_halo_status(_ L: OpaquePointer?) -> Int32 {
     luaSetStatus(luaL_checklstring(L, 1, nil).map { String(cString: $0) } ?? "")
+    return 0
+}
+/// halo.set(key, value) — override a halo-* config key (Lua wins over the file/UI). Keys
+/// are normalized to the `halo-` prefix; value coerced to a string (booleans → true/false).
+private func l_halo_set(_ L: OpaquePointer?) -> Int32 {
+    guard let kc = luaL_checklstring(L, 1, nil) else { return 0 }
+    var key = String(cString: kc)
+    if !key.hasPrefix("halo-") { key = "halo-" + key }
+    let val: String
+    if let vc = lua_tolstring(L, 2, nil) { val = String(cString: vc) }   // string / number
+    else { val = lua_toboolean(L, 2) != 0 ? "true" : "false" }            // boolean
+    luaConfigOverrides[key] = val
     return 0
 }
 private func l_halo_plugin(_ L: OpaquePointer?) -> Int32 {
@@ -257,6 +270,7 @@ final class LuaRuntime {
         if let old = luaState { lua_close(old); luaState = nil }
         // Drop refs/timers from the previous load (reload re-registers everything fresh).
         luaCommands.removeAll(); luaEvents.removeAll(); luaBinds.removeAll(); luaPluginSpecs.removeAll()
+        luaConfigOverrides.removeAll()
         luaClearTimers(); luaClearPanels()
         guard let L = luaL_newstate() else { return }
         luaState = L
@@ -279,6 +293,7 @@ final class LuaRuntime {
         reg("panel",   l_halo_panel)
         reg("close",   l_halo_close)
         reg("prompt",  l_halo_prompt)
+        reg("set",     l_halo_set)
         lua_setglobal(L, "halo")
         runPrelude()   // convenience wrappers over halo.cmd
         runInit()

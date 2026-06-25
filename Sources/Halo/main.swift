@@ -294,6 +294,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.luaPanels.removeAll() }
         luaShowPrompt = { [weak self] msg, ref in self?.showPrompt(msg, ref) }
         LuaRuntime.shared.start()   // embedded Lua: run ~/.config/halo/init.lua
+        // config-in-Lua: if init.lua set any halo-* keys, fold them in (Lua wins) + re-theme.
+        if !luaConfigOverrides.isEmpty {
+            theme = GhosttyApp.shared.reloadConfig()
+            windows.forEach { $0.applyTheme(theme) }
+        }
 
         installKeybinds()
         let settings = GhosttyApp.shared.settings
@@ -388,10 +393,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Re-read the config and re-apply colors/theme/terminal settings live — no
     /// relaunch. Pushes a fresh ghostty config to every surface and re-themes chrome.
     @objc func reloadConfig() {
-        let t = GhosttyApp.shared.reloadConfig()
+        LuaRuntime.shared.start()                  // re-run init.lua first → repopulate halo.set overrides
+        let t = GhosttyApp.shared.reloadConfig()   // re-read file + merge Lua overrides (Lua wins)
         theme = t
         windows.forEach { $0.applyTheme(t) }
-        LuaRuntime.shared.start()   // re-run init.lua on reload
+        // Re-parse the prefix from the merged settings (Lua may have set halo-prefix).
+        let s = GhosttyApp.shared.settings
+        prefix = parsePrefixSpec(s["halo-prefix"] ?? "ctrl+b")
+        let binds = (s["halo-prefix-bind"] ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        prefixTable = parsePrefixKeytable(binds)
     }
 
     /// Open the native settings panel (⌘,).
