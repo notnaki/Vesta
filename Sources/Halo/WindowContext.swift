@@ -26,14 +26,23 @@ final class WindowContext {
     private let attnMinTicks = 3
 
     init(theme: Theme,
+         workspace existing: Workspace? = nil,
          onBecomeKey: @escaping (WindowContext) -> Void,
          onClose: @escaping (WindowContext) -> Void) {
         self.onBecomeKey = onBecomeKey
         self.onClose = onClose
 
-        let ws = Workspace(theme: theme)
-        loadProjects(GhosttyApp.shared.settings, into: ws)
-        ws.restorePersisted()
+        // Shared-sidebar Phase 1: the workspace (projects + sessions) is app-owned and
+        // reused across windows, so closing a window never destroys sessions. Only the
+        // first window builds it; later windows / re-opens borrow the same instance.
+        let ws: Workspace
+        if let existing {
+            ws = existing
+        } else {
+            ws = Workspace(theme: theme)
+            loadProjects(GhosttyApp.shared.settings, into: ws)
+            ws.restorePersisted()
+        }
         self.workspace = ws
 
         // Same session-management closures as the single-window build, bound to

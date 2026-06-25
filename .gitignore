@@ -11,3 +11,4 @@ Halo.app/
 /Resources/
 /mockup.html
 # make-app.sh is tracked again — the release/CI workflows build the app with it.
+.claude/

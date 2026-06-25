@@ -95,6 +95,17 @@ let connected = withUnsafePointer(to: &addr) {
 }
 guard connected == 0 else { writeErr("halo-attach: daemon unavailable\n"); exit(1) }
 
+// ── raw mode on our controlling terminal (the ghostty PTY = our stdin/stdout) ─
+// Without this the PTY slave stays in cooked mode: the kernel line discipline
+// line-buffers, echoes, and swallows escape sequences, so arrow keys (history),
+// Ctrl-C, and Tab never reach the daemon's shell line editor. A relay must pass
+// every byte through untouched and let the real shell do the editing. OPOST-off
+// is correct too — daemon output is already cooked terminal bytes. Restore on exit
+// so the next program on this PTY isn't left stuck in raw mode.
+var savedTermios = termios()
+let ptyRaw = tcgetattr(STDIN_FILENO, &savedTermios) == 0
+if ptyRaw { var raw = savedTermios; cfmakeraw(&raw); tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) }
+
 // ── initial winsize from our controlling tty (ghostty's PTY) ─────────────────
 func currentWinsize() -> (Int, Int) {
     var ws = winsize()
@@ -190,8 +201,9 @@ outer: while true {
         }
     }
 }
-// EOF/quit: send a detach so the daemon drops our fd promptly; the shell keeps
-// running under halod.
+// EOF/quit: restore the terminal we raw-moded, then send a detach so the daemon
+// drops our fd promptly; the shell keeps running under halod.
+if ptyRaw { tcsetattr(STDIN_FILENO, TCSAFLUSH, &savedTermios) }
 send(.detach)
 close(sock)
 exit(0)

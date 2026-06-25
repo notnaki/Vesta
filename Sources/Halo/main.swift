@@ -26,8 +26,11 @@ if let verb = argv.first, controlVerbs.contains(verb) {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    // Multi-window: each WindowContext owns a Workspace + chrome + per-window caches.
-    // ⌘N opens another. `active` is the key window (last to become key), else the first.
+    // Shared-sidebar Phase 1: ONE app-owned Workspace (projects + sessions) shared by
+    // every window. Held strongly here so it outlives any window — closing a window is
+    // just closing a view, never destroying sessions. Windows keep per-window chrome +
+    // caches but render this same workspace.
+    var sharedWS: Workspace?
     var windows: [WindowContext] = []
     weak var lastKey: WindowContext?
     var active: WindowContext? { lastKey ?? windows.first }
@@ -47,12 +50,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     func newWindow() -> WindowContext {
         let prev = active?.controller.window ?? windows.last?.controller.window
-        let ctx = WindowContext(theme: theme,
+        let ctx = WindowContext(theme: theme, workspace: sharedWS,
             onBecomeKey: { [weak self] c in self?.lastKey = c },
-            onClose:     { [weak self] c in self?.windows.removeAll { $0 === c }
-                                            if self?.lastKey === c { self?.lastKey = self?.windows.last }
-                                            self?.scheduleSave() })   // a closed window shouldn't reappear
+            onClose:     { [weak self] c in
+                                            guard let self else { return }
+                                            // The shared workspace lives in sharedWS, so closing a window
+                                            // never loses sessions — just drop the view and persist state.
+                                            self.windows.removeAll { $0 === c }
+                                            if self.lastKey === c { self.lastKey = self.windows.last }
+                                            self.scheduleSave() })
         ctx.onPersist = { [weak self] in self?.scheduleSave() }
+        sharedWS = ctx.workspace      // retain the (possibly newly-built) shared workspace
         windows.append(ctx)
         lastKey = ctx
         // Only the first window restores/saves its frame; later ones cascade off it.
@@ -64,7 +72,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return ctx
     }
 
-    @objc func newWindowMenu() { newWindow(); NSApp.activate(ignoringOtherApps: true) }
+    @objc func newWindowMenu() {
+        // Phase 1: one shared workspace → one container, which can only live in one
+        // window. So ⌘N focuses the existing window instead of opening a 2nd that would
+        // steal the terminal. Real multi-window (Arc-style frozen snapshots) is Phase 2.
+        if let w = active?.controller.window { w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
+        newWindow(); NSApp.activate(ignoringOtherApps: true)
+    }
 
     // MARK: - Session switcher (Cmd-K / prefix-s)
 
@@ -141,16 +155,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func restoreWindows() {
         restoring = true
         defer { restoring = false }
+        let ctx = newWindow()                  // builds the shared workspace (sharedWS)
+        // One shared workspace → restore from the first saved entry. (Legacy files may
+        // hold several windows; we collapse to the single shared sidebar.)
         if let data = try? Data(contentsOf: URL(fileURLWithPath: Self.windowsFile)),
            let saved = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-           !saved.isEmpty {
-            for win in saved {
-                let ctx = newWindow()          // builds a default window…
-                ctx.workspace.hydrate(from: win)  // …then replaces its state with the saved one
-                ctx.refresh()
-            }
-        } else {
-            newWindow()
+           let first = saved.first {
+            ctx.workspace.hydrate(from: first)
+            ctx.refresh()
         }
     }
 
@@ -165,9 +177,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Persist the single shared workspace (one entry). It's app-owned (`sharedWS`), so
+    /// it survives window close and is saved whether or not any window is open — that's
+    /// what makes the session restore on next launch.
     func saveWindows() {
-        let arr = windows.map { $0.workspace.serialize() }
-        guard let data = try? JSONSerialization.data(withJSONObject: arr, options: [.prettyPrinted]) else { return }
+        guard let ws = sharedWS,
+              let data = try? JSONSerialization.data(withJSONObject: [ws.serialize()], options: [.prettyPrinted]) else { return }
         try? data.write(to: URL(fileURLWithPath: Self.windowsFile), options: .atomic)
     }
 
