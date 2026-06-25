@@ -343,15 +343,15 @@ final class LuaRuntime {
         luaFire("config-reloaded")   // handlers registered in init.lua/plugins react to (re)load
     }
 
-    /// Load plugins: declared via `halo.plugin("owner/repo")` (cloned to plugins/ if
-    /// missing) plus any drop-in `plugins/*/` folder. Each plugin's `init.lua` (or
-    /// `plugin/init.lua`) runs with the same `halo` global, so it registers commands /
-    /// events / binds like init.lua does.
     /// Strip a trailing .git and take the last path component → the plugin's folder name.
     static func pluginName(_ repo: String) -> String {
         ((repo as NSString).lastPathComponent as NSString).deletingPathExtension
     }
 
+    /// Load plugins: declared via `halo.plugin("owner/repo")` (cloned to plugins/ if missing,
+    /// pinned to a ref when given) plus any drop-in `plugins/*/` folder. Each plugin's
+    /// `init.lua` (or `plugin/init.lua`) runs with the same `halo` global. Loaded in priority
+    /// order; the resolved commit/ref/version of each is written to the lockfile.
     private func loadPlugins() {
         let base = Self.pluginsDir
         try? FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
@@ -395,9 +395,11 @@ final class LuaRuntime {
         items.sort { $0.priority != $1.priority ? $0.priority > $1.priority : $0.name < $1.name }
         for it in items { loadPluginEntry(it.dir) }
 
-        // 3. Refresh the lockfile from the installed git checkouts (records the resolved commit
-        //    + manifest version per plugin; non-git drop-ins are skipped).
-        var lock = readLock()
+        // 3. Rebuild the lockfile from the installed git checkouts (records the resolved commit
+        //    + manifest version per plugin; non-git drop-ins are skipped). Rebuilding — rather
+        //    than merging — prunes entries for plugins that have since been removed. Entries for
+        //    plugins still cloning (step 1, async) are re-added by their completion handler.
+        var lock: [String: LockEntry] = [:]
         for it in items {
             guard let commit = gitHeadCommit(it.dir) else { continue }
             let spec = declared[it.name]
