@@ -44,20 +44,20 @@ final class SettingsWindowController: NSWindowController {
 
         let accent = NSColorWell(); accent.color = cfg.accent ?? theme.accent
         accent.target = self; accent.action = #selector(accentChanged(_:))
-        stack.addArrangedSubview(row("Accent", accent))
+        stack.addArrangedSubview(row("Accent", accent, key: "halo-accent"))
 
         let surface = NSColorWell(); surface.color = cfg.surface ?? theme.background
         surface.target = self; surface.action = #selector(surfaceChanged(_:))
-        stack.addArrangedSubview(row("Surface", surface))
+        stack.addArrangedSubview(row("Surface", surface, key: "halo-surface"))
 
-        stack.addArrangedSubview(row("Font", fontPopup()))
+        stack.addArrangedSubview(row("Font", fontPopup(), key: "halo-font-family"))
 
         stack.addArrangedSubview(row("Sidebar width",
-            slider(Double(cfg.sidebarWidth), 160, 420, #selector(sidebarChanged(_:)))))
+            slider(Double(cfg.sidebarWidth), 160, 420, #selector(sidebarChanged(_:))), key: "halo-sidebar-width"))
         stack.addArrangedSubview(row("Font size",
-            slider(Double(cfg.fontScale * 13), 9, 22, #selector(fontChanged(_:)))))
+            slider(Double(cfg.fontScale * 13), 9, 22, #selector(fontChanged(_:))), key: "halo-font-size"))
         stack.addArrangedSubview(row("Divider width",
-            slider(Double(cfg.dividerWidth), 1, 14, #selector(dividerChanged(_:)))))
+            slider(Double(cfg.dividerWidth), 1, 14, #selector(dividerChanged(_:))), key: "halo-divider-width"))
 
         let note = NSTextField(labelWithString: "Sidebar width applies live; click Reload to apply colors, fonts, theme, and any edited config.")
         note.font = .systemFont(ofSize: 11); note.textColor = .secondaryLabelColor
@@ -114,10 +114,18 @@ final class SettingsWindowController: NSWindowController {
         return ""
     }
 
-    private func row(_ label: String, _ control: NSView) -> NSView {
+    private func row(_ label: String, _ control: NSView, key: String? = nil) -> NSView {
         let l = NSTextField(labelWithString: label)
         l.widthAnchor.constraint(equalToConstant: 110).isActive = true
-        let r = NSStackView(views: [l, control])
+        var views: [NSView] = [l, control]
+        // Lua wins: if init.lua sets this key, it's Lua-owned — disable the control and badge it.
+        if let key, luaConfigOverrides[key] != nil {
+            (control as? NSControl)?.isEnabled = false
+            let badge = NSTextField(labelWithString: "· set by init.lua")
+            badge.font = .systemFont(ofSize: 10); badge.textColor = .secondaryLabelColor
+            views.append(badge)
+        }
+        let r = NSStackView(views: views)
         r.orientation = .horizontal; r.spacing = 10; r.alignment = .centerY
         return r
     }
