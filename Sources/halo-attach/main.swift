@@ -4,9 +4,37 @@ import HaloMux
 import Darwin
 #endif
 
-// argv[1] = paneID.
+// argv[1] = paneID. This relay is a dumb byte pump: ghostty's stdin → daemon,
+// daemon output → ghostty's stdout. The daemon owns the shell; on EOF (pane
+// closed) we detach and the shell keeps running under halod.
 let args = CommandLine.arguments
-guard args.count >= 2 else { FileHandle.standardError.write(Data("usage: halo-attach <paneID>\n".utf8)); exit(2) }
+
+// stderr diagnostics via a raw write loop. FileHandle.standardError.write(_:) throws an
+// uncaught NSException when the underlying fd (the ghostty PTY) returns EAGAIN/EPIPE,
+// which aborts the relay (SIGABRT) and surfaces as "Ghostty failed to launch". Never
+// touch FileHandle here — raw write() returns an error, it can't throw.
+func writeErr(_ s: String) {
+    let bytes = Array(s.utf8)
+    bytes.withUnsafeBytes { raw in
+        guard let base = raw.baseAddress else { return }
+        var off = 0
+        while off < raw.count {
+            let n = write(STDERR_FILENO, base + off, raw.count - off)
+            if n > 0 { off += n; continue }
+            if n < 0 && errno == EINTR { continue }
+            break   // EAGAIN/EPIPE/other → give up quietly, never throw
+        }
+    }
+}
+
+// A pane that draws the daemon-spawn straw gets a transient SIGHUP during the spawn
+// window (ghostty/login session churn at workspace restore); default SIGHUP = terminate,
+// which silently killed the relay before it could connect → "Ghostty failed to launch".
+// Ignore it: the real "pane closed" signal is PTY EOF on stdin, which the pump handles.
+// SIGPIPE likewise must be ignored — we write to the daemon socket and check the return.
+signal(SIGHUP, SIG_IGN)
+signal(SIGPIPE, SIG_IGN)
+guard args.count >= 2 else { writeErr("usage: halo-attach <paneID>\n"); exit(2) }
 let paneID = args[1]
 
 // ── lazy-spawn the daemon if its socket is absent ────────────────────────────
@@ -27,17 +55,28 @@ func spawnDaemon() {
     let exe = Bundle.main.executableURL?.deletingLastPathComponent()
         .appendingPathComponent("halod").path
         ?? (CommandLine.arguments[0] as NSString).deletingLastPathComponent + "/halod"
-    // setsid is not shipped on macOS; use perl's POSIX::setsid as a portable fallback.
-    // On Linux, setsid(1) is available; on macOS, perl -MPOSIX=setsid is always present.
-    let cmd: String
-    if FileManager.default.fileExists(atPath: "/usr/bin/setsid") {
-        cmd = "setsid \"\(exe)\" >/dev/null 2>&1 &"
-    } else {
-        cmd = "perl -MPOSIX=setsid -e 'setsid; exec @ARGV' -- \"\(exe)\" >/dev/null 2>&1 &"
+    // Launch halod detached via posix_spawn with POSIX_SPAWN_SETSID. We deliberately
+    // avoid Process/`/bin/sh`/perl: Process.waitUntilExit() hangs when the backgrounded
+    // grandchild inherits our pane's PTY fds, which stalled the winning pane forever.
+    // SETSID puts halod in its own session so it outlives this pane; the file actions
+    // point its std fds at /dev/null so it never holds/steals the pane's terminal.
+    // halod's own flock makes the multi-pane spawn race resolve to one surviving daemon.
+    var fa: posix_spawn_file_actions_t?
+    posix_spawn_file_actions_init(&fa)
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDWR, 0)
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_RDWR, 0)
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_RDWR, 0)
+    var attr: posix_spawnattr_t?
+    posix_spawnattr_init(&attr)
+    posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSID))
+    var pid: pid_t = 0
+    exe.withCString { c in
+        var argv: [UnsafeMutablePointer<CChar>?] = [UnsafeMutablePointer(mutating: c), nil]
+        _ = posix_spawn(&pid, c, &fa, &attr, &argv, environ)
     }
-    let w = Process(); w.executableURL = URL(fileURLWithPath: "/bin/sh")
-    w.arguments = ["-c", cmd]
-    try? w.run(); w.waitUntilExit()
+    posix_spawn_file_actions_destroy(&fa)
+    posix_spawnattr_destroy(&attr)
+    // parent: wait (bounded) for the socket to come up, whether we won the race or not.
     for _ in 0..<100 { if socketAlive(MuxPaths.daemonSocket) { return }; usleep(20_000) }
 }
 if !socketAlive(MuxPaths.daemonSocket) { spawnDaemon() }
@@ -54,7 +93,7 @@ let slen = socklen_t(MemoryLayout<sockaddr_un>.size)
 let connected = withUnsafePointer(to: &addr) {
     $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(sock, $0, slen) }
 }
-guard connected == 0 else { FileHandle.standardError.write(Data("halo-attach: daemon unavailable\n".utf8)); exit(1) }
+guard connected == 0 else { writeErr("halo-attach: daemon unavailable\n"); exit(1) }
 
 // ── initial winsize from our controlling tty (ghostty's PTY) ─────────────────
 func currentWinsize() -> (Int, Int) {
@@ -107,16 +146,6 @@ signal(SIGWINCH) { _ in
         d.withUnsafeBytes { raw in _ = write(gSock, raw.baseAddress, raw.count) }
     }
 }
-// M4: GUI signals focus changes to this relay; forward them as focus frames.
-// Mirrors the SIGWINCH handler: write directly to gSock (no dispatch run loop).
-signal(SIGUSR1) { _ in   // focused
-    let d = encode(ClientFrame.focus(true))
-    d.withUnsafeBytes { raw in _ = write(gSock, raw.baseAddress, raw.count) }
-}
-signal(SIGUSR2) { _ in   // idle mirror
-    let d = encode(ClientFrame.focus(false))
-    d.withUnsafeBytes { raw in _ = write(gSock, raw.baseAddress, raw.count) }
-}
 
 // ── pump loop: stdin → daemon(input), daemon(server frames) → stdout ─────────
 _ = fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL, 0) | O_NONBLOCK)
@@ -132,45 +161,37 @@ outer: while true {
     if __darwin_fd_isset(STDIN_FILENO, &rset) != 0 {
         var tmp = [UInt8](repeating: 0, count: 65536)
         let k = read(STDIN_FILENO, &tmp, tmp.count)
-        if k == 0 { break }                                 // EOF on stdin (pane closed) → detach
+        if k == 0 { break }           // EOF on stdin (pane closed) → detach
         if k > 0 { send(.input(Data(tmp[0..<k]))) }
     }
-    // daemon → stdout (decode server frames; write output/snapshot bytes).
+    // daemon → stdout (decode server frames; write output bytes).
     if __darwin_fd_isset(sock, &rset) != 0 {
         var tmp = [UInt8](repeating: 0, count: 65536)
         let k = read(sock, &tmp, tmp.count)
-        if k <= 0 { break }                                 // daemon gone → exit (shell stays under daemon)
+        if k <= 0 { break }   // daemon gone → exit
         inbuf.append(Data(tmp[0..<k]))
         while let f = decodeServerFrame(from: &inbuf) {
             switch f {
-            case let .snapshot(screen, scrollback, images):
-                // Restore scrollback first, then current screen, then replay images.
-                writeOut(scrollback)
-                writeOut(screen)
-                writeOut(images)
             case let .output(bytes):
+                // Live output AND the on-attach raw-ring replay arrive as this frame.
                 writeOut(bytes)
             case .exited:
-                break outer                                  // shell exited → relay ends
-            case .needsUpdate:
-                FileHandle.standardError.write(Data("halo-attach: daemon protocol mismatch; update Halo\n".utf8))
-                break outer
+                break outer        // shell exited → relay ends
             case let .helloAck(version):
-                // Client-side version gate: the daemon advertises its version here; if it
-                // differs from ours, refuse rather than misparse a newer/older frame stream
-                // (critical for remote attach, M5). The shell stays alive under the daemon.
+                // Version gate: refuse a skewed daemon rather than misparse its frames
+                // (critical for remote attach). The shell stays alive under the daemon.
                 if version != muxProtocolVersion {
-                    FileHandle.standardError.write(Data("halo-attach: daemon protocol v\(version) != client v\(muxProtocolVersion); update Halo\n".utf8))
+                    writeErr("halo-attach: daemon protocol v\(version) != client v\(muxProtocolVersion); update Halo\n")
                     break outer
                 }
             case .sessions:
-                break                                        // not used by the pump
+                break              // not used by the pump
             }
         }
     }
 }
-// EOF/quit: just close. We send a detach so the daemon drops our fd promptly,
-// but the shell keeps running under halod.
+// EOF/quit: send a detach so the daemon drops our fd promptly; the shell keeps
+// running under halod.
 send(.detach)
 close(sock)
 exit(0)

@@ -1,6 +1,5 @@
 import Foundation
 import HaloMux
-import CVterm
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -9,16 +8,8 @@ final class Daemon {
     private var listenFD: Int32 = -1
     private var sessions: [String: Session] = [:]
     private var clientBufs: [Int32: Data] = [:]   // partial inbound frames per client fd
-    // Per-connection state: fd → (paneID it attached to, daemon-assigned clientID).
-    private var clientSession: [Int32: (paneID: String, clientID: Int)] = [:]
-
-    // Per-session sb_pushline trampoline: libvterm hands us scrolled-off rows.
-    // We can't capture Swift state in a C function pointer, so route via a global
-    // keyed by the session's stable raw-pointer identity (`Session.screenKey`).
-    // Single-threaded select loop owns all mutation (Task 3.7 threading invariant),
-    // so this shared map needs no locking; `nonisolated(unsafe)` asserts that the
-    // synchronization is external (the one daemon thread).
-    nonisolated(unsafe) static var ringFor: [UnsafeMutableRawPointer: ScrollbackRing] = [:]
+    // Per-connection state: fd → the paneID it attached to.
+    private var clientSession: [Int32: String] = [:]
 
     func run() {
         MuxPaths.ensureDirs()
@@ -40,7 +31,8 @@ final class Daemon {
         let bound = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, len) }
         }
-        guard bound == 0, listen(fd, 16) == 0 else { close(fd); return }
+        let lr = listen(fd, 16)
+        guard bound == 0, lr == 0 else { close(fd); return }
         chmod(path, 0o600)            // owner-only: this socket carries keystrokes + scrollback
         listenFD = fd
         loop()
@@ -54,7 +46,14 @@ final class Daemon {
             for fd in clientBufs.keys { __darwin_fd_set(fd, &rset); maxFD = max(maxFD, fd) }
             var tv = timeval(tv_sec: 5, tv_usec: 0)
             let n = select(maxFD + 1, &rset, nil, nil, &tv)
-            if n < 0 { if errno == EINTR { continue }; break }
+            if n < 0 {
+                if errno == EINTR { continue }
+                // EBADF: a closed fd slipped into the set. Don't take down every shell —
+                // prune the dead fds and keep serving. (Root cause is fixed in readClient,
+                // but one stray fd must never kill the daemon.)
+                if errno == EBADF, pruneDeadFDs() { continue }
+                break
+            }
             reapDeadShells()
             if sessions.isEmpty && clientBufs.isEmpty && idleExpired() { break }  // idle-exit
             if __darwin_fd_isset(listenFD, &rset) != 0 { acceptClient() }
@@ -68,6 +67,16 @@ final class Daemon {
 
     private var lastActivity = Date()
     private func idleExpired() -> Bool { Date().timeIntervalSince(lastActivity) > 10 }
+
+    /// Drop any client fd that's no longer a valid open descriptor. Called on a select()
+    /// EBADF so a single stale fd can't kill the daemon (which would drop every shell).
+    /// Returns true if it pruned at least one (so the caller can retry select); false
+    /// means the bad fd wasn't a client — fall through to break rather than spin.
+    private func pruneDeadFDs() -> Bool {
+        var pruned = false
+        for fd in Array(clientBufs.keys) where fcntl(fd, F_GETFD) < 0 { closeClient(fd); pruned = true }
+        return pruned
+    }
 
     private func acceptClient() {
         let c = accept(listenFD, nil, nil)
@@ -85,7 +94,7 @@ final class Daemon {
             s.ingest(data)
             let frame = encode(ServerFrame.output(data))
             var stuck: [Int32] = []
-            for c in s.clientFDs where !sendFrame(c, frame) { stuck.append(c) }
+            for c in s.clients where !sendFrame(c, frame) { stuck.append(c) }
             for c in stuck { closeClient(c) }   // drop desynced/stuck clients after iterating
         } else if n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
             s.markDead()
@@ -97,9 +106,8 @@ final class Daemon {
             let status = reapAndDecode(s.pid)   // blocks briefly: child's PTY is already EOF/killed
             let frame = encode(ServerFrame.exited(status: status))
             var stuck: [Int32] = []
-            for c in s.clientFDs where !sendFrame(c, frame) { stuck.append(c) }
+            for c in s.clients where !sendFrame(c, frame) { stuck.append(c) }
             sessions[id] = nil
-            Daemon.ringFor[s.screenKey] = nil
             for c in stuck { closeClient(c) }   // drop stuck clients after iterating + removing session
         }
     }
@@ -124,12 +132,18 @@ final class Daemon {
         clientBufs[fd, default: Data()].append(Data(tmp[0..<n]))
         lastActivity = Date()
         var buf = clientBufs[fd]!
-        while let frame = decodeClientFrame(from: &buf) { handle(frame, from: fd) }
+        while let frame = decodeClientFrame(from: &buf) {
+            handle(frame, from: fd)
+            // handle() may closeClient(fd) (.detach/.kill/send failure). Writing buf
+            // back below would resurrect the closed fd as a clientBufs key → next
+            // select() sees a dead fd → EBADF → daemon dies → all panes drop. Bail.
+            if clientBufs[fd] == nil { return }
+        }
         clientBufs[fd] = buf
     }
 
     private func closeClient(_ fd: Int32) {
-        if let st = clientSession[fd] { sessions[st.paneID]?.removeClient(id: st.clientID) }
+        if let paneID = clientSession[fd] { sessions[paneID]?.removeClient(fd: fd) }
         clientSession[fd] = nil; clientBufs[fd] = nil; close(fd)
     }
 
@@ -147,70 +161,37 @@ final class Daemon {
                     if !sendFrame(fd, encode(ServerFrame.exited(status: 1))) { closeClient(fd) }
                     return
                 }
-                installScrollback(fresh)
                 sessions[paneID] = fresh; s = fresh
             }
-            // Register this client; addClient re-arbitrates the shared PTY grid from
-            // all attached clients (a second mirror joining no longer blindly resizes).
-            let cid = s.addClient(fd: fd, cols: Int(cols), rows: Int(rows))
-            clientSession[fd] = (paneID: paneID, clientID: cid)
+            s.addClient(fd: fd)
+            clientSession[fd] = paneID
             if !sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion))) {
                 closeClient(fd); return
             }
-            // Clean redraw: current screen + restored scrollback + cached images.
-            // Scrollback shown = on-disk spilled history + the in-memory ring tail.
-            // After a daemon crash this fresh session has an empty ring but the prior
-            // <paneID>.log survives on disk, so reading it here is exactly the #6
-            // history-recovery mitigation — recovered and live-spilled history use one path.
-            var scrollback = (try? Data(contentsOf: URL(fileURLWithPath: MuxPaths.sessionLog(s.paneID)))) ?? Data()
-            if !scrollback.isEmpty, scrollback.last != 0x0a { scrollback.append(0x0a) }
-            scrollback.append(Data(s.ring.lines().joined(separator: [0x0a])))
-            if !sendFrame(fd, encode(ServerFrame.snapshot(
-                screen: s.screenSnapshot(), scrollback: scrollback, images: s.images.replayBytes()))) {
+            // Clean reattach: replay the raw output ring verbatim. ghostty parses it,
+            // so the screen comes back byte-exact (colors/cursor/alt-screen and all),
+            // and recent lines land in native scrollback for free. Empty for a fresh shell.
+            let replay = s.snapshot()
+            if !replay.isEmpty, !sendFrame(fd, encode(ServerFrame.output(replay))) {
                 closeClient(fd); return
             }
         case let .input(data):
             // Input-from-any: any client's keystrokes go to the single PTY master.
-            if let st = clientSession[fd] { sessions[st.paneID]?.writeInput(data) }
+            if let paneID = clientSession[fd] { sessions[paneID]?.writeInput(data) }
         case let .resize(cols, rows):
-            // Per-client: update THIS client's reported grid; the shared PTY size
-            // now follows arbitration (focused client wins), not the last resize.
-            if let st = clientSession[fd] {
-                sessions[st.paneID]?.setClientGrid(id: st.clientID, cols: Int(cols), rows: Int(rows))
+            // One PTY, last-resize-wins. (Focus-based arbitration across mirrors is deferred.)
+            if let paneID = clientSession[fd] {
+                sessions[paneID]?.resize(cols: Int32(cols), rows: Int32(rows))
             }
         case .detach:
-            closeClient(fd)   // removes this client + re-arbitrates (no PTY reap)
+            closeClient(fd)   // removes this client (no PTY reap — shell lives on)
         case .kill:
-            if let st = clientSession[fd], let s = sessions[st.paneID] { kill(s.pid, SIGKILL); s.markDead() }
+            if let paneID = clientSession[fd], let s = sessions[paneID] { kill(s.pid, SIGKILL); s.markDead() }
         case .list:
             let infos = sessions.values.map { SessionInfo(id: $0.paneID, name: $0.name, cwd: $0.cwd,
                 alive: $0.alive, attachedCount: $0.clients.count) }
             if !sendFrame(fd, encode(ServerFrame.sessions(infos))) { closeClient(fd) }
-        case let .focus(on):
-            // Focused client drives the shared PTY grid via arbitration.
-            if let st = clientSession[fd] {
-                sessions[st.paneID]?.setClientFocus(id: st.clientID, focused: on)
-            }
         }
-    }
-
-    // Wire libvterm's scrollback push to this session's ring (scrolled-off rows → disk spill).
-    private func installScrollback(_ s: Session) {
-        Daemon.ringFor[s.screenKey] = s.ring
-        var cbs = VTermScreenCallbacks()
-        cbs.sb_pushline = { cols, cellsPtr, user in
-            guard let user, let ring = Daemon.ringFor[user] else { return 0 }
-            var line = Data()
-            if let cells = cellsPtr {
-                for i in 0..<Int(cols) {
-                    let ch = cells[i].chars.0
-                    if ch != 0, let u = Unicode.Scalar(ch) { line.append(contentsOf: Array(String(u).utf8)) }
-                    else { line.append(0x20) }
-                }
-            }
-            ring.push(line); return 1
-        }
-        s.installScreenCallbacks(cbs, user: s.screenKey)
     }
 
     /// Write a whole length-prefixed frame to `fd`. Returns true if every byte was

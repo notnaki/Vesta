@@ -17,6 +17,9 @@ and an agent-control CLI on top.
 
 - **Real libghostty** — Ghostty 1.3.2 Metal renderer, your ghostty config and
   theme, zero reimplemented terminal logic.
+- **Persistent sessions (tmux-style)** — shells survive Halo quitting and
+  reattach cleanly. A small daemon (`halod`) holds the PTYs; panes connect
+  through a relay (`halo-attach`). Prefix-key mode + a fuzzy session switcher.
 - **Projects → sessions sidebar** — vertical, drag-resizable. Each project owns
   sessions; rename / recolor / remove from the right-click menu.
 - **Native splits** — `⌘D` / `⌘⇧D`, click-to-focus, zoom, drag dividers.
@@ -60,7 +63,62 @@ halo send-keys <target> <text>  # type into a pane (target = pane id or "focused
 halo capture                    # dump the focused pane's screen
 halo list                       # JSON: sessions + panes + focus
 halo tab new|next|prev|<n>      # session control
+halo sessions                   # list daemon-held sessions (incl. detached)
+halo kill <id>                  # end a session's shell (by paneID)
 ```
+
+## Multiplexer & sessions
+
+Shells run under a small daemon (`halod`), not the app, so they **survive Halo
+quitting** and **reattach cleanly**. The daemon owns one `forkpty`'d shell per
+pane and keeps the last ~256 KB of its raw output; on attach it replays those
+bytes and ghostty re-renders them — colors, cursor, full-screen apps and all
+(no separate screen model, so nothing to garble). On by default; set
+`halo-persist = false` for plain non-persistent shells.
+
+What you get:
+
+- **Survive quit** — `⌘Q`, reopen Halo: panes come back with their shells and
+  recent output.
+- **Detach, don't kill** — `⌘W` (pane) / `⌘⇧W` (session) detaches; the shell
+  keeps running under `halod`. Reopen it from the switcher.
+- **Switcher** — `⌘K` (or prefix-`s`): fuzzy-filter every session across
+  windows/projects, including detached ones. Enter to jump.
+- **Prefix mode** — tmux muscle memory. Press the prefix (`ctrl+b` by default,
+  `halo-prefix`), then a key (table below). Empty `halo-prefix` disables it.
+- **Explicit kill** — prefix-`x`, or `halo kill <id>` — when you actually mean
+  to end the shell.
+
+### Verify it works
+
+```sh
+# 1. survive quit
+#    in a pane:   echo i-was-here && date
+#    ⌘Q, reopen Halo.app → the pane shows that output again.
+
+# 2. detach / reattach
+#    ⌘W the pane (shell keeps running), ⌘K → pick it → output replays.
+
+# 3. from the CLI, watch the daemon hold sessions
+halo sessions            # lists live + detached sessions with attach counts
+halo kill <id>           # ends one for real
+```
+
+If a pane ever says "daemon protocol … update Halo", an **old `halod` from a
+previous build** is still running (`pkill -f halod`, then relaunch) — the
+daemon is single-instance per user.
+
+### Prefix keytable (after `ctrl+b`)
+
+| Key | Action | Key | Action |
+|-----|--------|-----|--------|
+| `%` | split vertical | `c` | new session |
+| `"` | split horizontal | `n` / `p` | next / prev session |
+| `h j k l` / arrows | focus pane | `,` | rename session |
+| `z` | zoom pane | `s` | switcher |
+| `d` | detach pane | `x` | kill shell |
+
+Override bindings with `halo-prefix-bind = key=action, …` in your ghostty config.
 
 ## Configuration
 
@@ -79,6 +137,9 @@ look, so an untouched config changes nothing.
 | `halo-font-size` | 13 | chrome font size |
 | `halo-divider-width` | 8 | split divider grab width (1px hairline drawn) |
 | `halo-projects` | — | comma-separated project paths to preload |
+| `halo-persist` | true | run shells under `halod` (survive quit); `false` = plain shells |
+| `halo-prefix` | ctrl+b | prefix key for tmux-style mode; empty = disabled |
+| `halo-prefix-bind` | — | override prefix bindings: `key=action, …` |
 
 ## Keybindings
 
@@ -91,9 +152,12 @@ look, so an untouched config changes nothing.
 | `⌘{` / `⌘}` | previous / next session |
 | `⌘1`–`⌘9` | select session N |
 | `⌘B` | toggle sidebar |
+| `⌘K` | session switcher (fuzzy, incl. detached) |
+| `ctrl+b` then a key | prefix mode (see Multiplexer & sessions) |
 
 Click a pane to focus it; click a project to expand it; right-click a project
-to rename / recolor / remove it.
+to rename / recolor / remove it. `⌘W` / `⌘⇧W` **detach** (the shell lives on
+under `halod`) rather than killing — see Multiplexer & sessions.
 
 ## Architecture
 
@@ -105,13 +169,22 @@ to rename / recolor / remove it.
 - `Control.swift` — the `halo` CLI + socket server.
 - `GhosttyConfig.swift` — `Theme` + `HaloConfig` (the `halo-*` keys).
 - `Git.swift` — branch / status, shelled out off-main.
+- `PrefixMode.swift` / `Switcher.swift` — tmux-style prefix mode + fuzzy session switcher.
+- `Sources/halod/` — the session daemon: one `forkpty`'d shell per pane + a raw
+  output ring, replayed on attach. No terminal parsing (ghostty does that).
+- `Sources/halo-attach/` — the per-pane relay ghostty spawns as its command;
+  a dumb byte pump between the pane and the daemon over a `0600` unix socket.
+- `Sources/HaloMux/` — shared wire protocol (`MuxProtocol`) + paths (`MuxPaths`).
 
 ## Roadmap
 
-Designs live in `docs/superpowers/specs/`. In progress: **cmux parity**
-(`2026-06-22-cmux-parity-design.md`) — git-worktree-isolated sessions, attention
-rings, richer sidebar (ports + dirty state), and an embedded browser pane.
-Deferred: OS-level notifications.
+Designs live in `docs/superpowers/specs/`. Shipped: **persistent sessions**
+(`2026-06-25-mux-rawring-rewrite.md`) — `halod`/`halo-attach` raw-ring
+multiplexer, prefix mode, switcher. Deferred there: mirroring (one session in
+two panes), remote attach (`halo attach ssh://`), disk-spill scrollback, and
+inline-image replay across detach. Also in flight: **cmux parity**
+(`2026-06-22-cmux-parity-design.md`) — worktree-isolated sessions, attention
+rings, richer sidebar, embedded browser pane.
 
 ## Self-checks
 

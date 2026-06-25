@@ -1,37 +1,41 @@
 import Foundation
 import HaloMux
-import CVterm
 #if canImport(Darwin)
 import Darwin
 #endif
 
-/// One live shell: PTY master + libvterm authoritative screen + scrollback ring
-/// (disk-spilled) + image cache. Drained by the daemon even when no client is attached.
+/// One live shell: a `forkpty`'d PTY master + a bounded **raw output ring**.
+/// The daemon drains the PTY into the ring even with zero clients (no
+/// backpressure). On attach the ring is replayed verbatim — ghostty does all
+/// the VT parsing, so reattach is byte-exact (no screen model, no snapshot).
 final class Session {
     let paneID: String
     let masterFD: Int32
     let pid: pid_t
     var cols: Int32
     var rows: Int32
-    private let vt: OpaquePointer
-    private let screen: OpaquePointer
-    // libvterm stores the *pointer* to the callbacks struct (screen.c:49), not a copy,
-    // so it must outlive `installScreenCallbacks`. We own it here for the session's life.
-    private let callbacks = UnsafeMutablePointer<VTermScreenCallbacks>.allocate(capacity: 1)
-    let ring: ScrollbackRing
-    let images = ImageCache()
-    // M4: multiple clients may attach to one paneID (mirroring). Each carries its
-    // own reported grid + focus, and the shared PTY size follows `arbitrateSize`.
-    struct Client { let id: Int; let fd: Int32; var focused: Bool; var cols: Int; var rows: Int }
-    private(set) var clients: [Client] = []
-    private var nextClientID = 0
-    /// The attached client fds, for output fan-out / exit broadcast.
-    var clientFDs: [Int32] { clients.map(\.fd) }
+    /// Attached client fds (for output fan-out / exit broadcast). Usually one;
+    /// multiple = mirroring, which is deferred — fan-out is free, size is just
+    /// last-resize-wins for now (no focus arbitration).
+    private(set) var clients: [Int32] = []
     private(set) var alive = true
     var cwd: String?
     var name: String?
 
-    init?(paneID: String, cols: Int32, rows: Int32) {
+    /// Last N bytes of raw PTY output, replayed on attach. 256 KB ≈ a few
+    /// screenfuls of scrollback + whatever a full-screen app last drew.
+    // ponytail: byte-bounded ring, so a reattach can replay a partial escape
+    // sequence at the very front (rare, ghostty resyncs past it). Add a
+    // disk-backed/screen-aware buffer only if that artifact actually bites.
+    private static let ringCap = 256 * 1024
+    private(set) var ring = Data()
+
+    init?(paneID: String, cols rawCols: Int32, rows rawRows: Int32) {
+        // Clamp to a sane minimum. A pane created before its window lays out reports a
+        // 0×0 size; a 0-sized PTY is rejected by some shells. The real size arrives via
+        // the first resize.
+        let cols = rawCols > 0 ? rawCols : 80
+        let rows = rawRows > 0 ? rawRows : 24
         self.paneID = paneID; self.cols = cols; self.rows = rows
         // forkpty a login shell.
         var master: Int32 = 0
@@ -53,115 +57,30 @@ final class Session {
             _exit(127)
         }
         self.pid = child; self.masterFD = master
-        // libvterm: authoritative screen, UTF-8, scrollback callback drains evicted rows.
-        guard let vt = vterm_new(Int32(rows), Int32(cols)) else {
-            kill(child, SIGKILL); _ = waitpid(child, nil, 0); close(master); return nil
-        }
-        self.vt = vt
-        vterm_set_utf8(vt, 1)
-        guard let screen = vterm_obtain_screen(vt) else {
-            vterm_free(vt); kill(child, SIGKILL); _ = waitpid(child, nil, 0); close(master); return nil
-        }
-        self.screen = screen
-        vterm_screen_reset(screen, 1)
-        // Disk-spill ring: evicted lines append to the session log (history recovery).
-        let logPath = MuxPaths.sessionLog(paneID)
-        self.ring = ScrollbackRing(cap: 10_000) { line in
-            if let fh = FileHandle(forWritingAtPath: logPath) ?? {
-                FileManager.default.createFile(atPath: logPath, contents: nil)
-                return FileHandle(forWritingAtPath: logPath)
-            }() {
-                fh.seekToEndOfFile(); fh.write(line); fh.write(Data([0x0a])); try? fh.close()
-            }
-        }
         _ = fcntl(masterFD, F_SETFL, fcntl(masterFD, F_GETFL, 0) | O_NONBLOCK)
     }
 
-    /// Feed raw PTY output into libvterm (updates the authoritative screen). Rows
-    /// that scroll off the top are captured into the ring via the `sb_pushline`
-    /// callback the daemon installs (see `Daemon.installScrollback`).
+    /// Append raw PTY output to the ring, trimming the oldest bytes past the cap.
     func ingest(_ bytes: Data) {
-        bytes.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            _ = vterm_input_write(vt, base.assumingMemoryBound(to: CChar.self), raw.count)
+        ring.append(bytes)
+        if ring.count > Session.ringCap {
+            ring.removeFirst(ring.count - Session.ringCap)   // O(n) trim; runs only when full
         }
     }
 
-    /// Render the current libvterm screen to a UTF-8 byte stream (clean redraw on attach).
-    func screenSnapshot() -> Data {
-        var out = Data()
-        for row in 0..<rows {
-            for col in 0..<cols {
-                var cell = VTermScreenCell()
-                let pos = VTermPos(row: Int32(row), col: Int32(col))
-                vterm_screen_get_cell(screen, pos, &cell)
-                // Wide glyph (CJK/emoji): a width-2 cell followed by a width-0 continuation
-                // cell. Emit nothing for the continuation — the preceding glyph already spans
-                // both columns (ghostty re-renders it 2 wide); emitting a space would drift cols.
-                if cell.width == 0 { continue }
-                if cell.chars.0 == 0 { out.append(0x20) }
-                else if let u = Unicode.Scalar(cell.chars.0) {
-                    out.append(contentsOf: Array(String(u).utf8))
-                } else { out.append(0x20) }
-            }
-            out.append(0x0a)
-        }
-        return out
-    }
+    /// The replay sent on attach: the whole current ring.
+    func snapshot() -> Data { ring }
 
-    func resize(cols: Int32, rows: Int32) {
+    func resize(cols rawCols: Int32, rows rawRows: Int32) {
+        let cols = rawCols > 0 ? rawCols : 80
+        let rows = rawRows > 0 ? rawRows : 24
         self.cols = cols; self.rows = rows
         var ws = winsize(ws_row: UInt16(rows), ws_col: UInt16(cols), ws_xpixel: 0, ws_ypixel: 0)
         _ = ioctl(masterFD, TIOCSWINSZ, &ws)
-        vterm_set_size(vt, Int32(rows), Int32(cols))
     }
 
-    // ── M4: per-client roster + size arbitration ──────────────────────────────
-    /// Register a newly-attached client (its Hello cols/rows). New clients start
-    /// `focused: false`; the relay sends `focus(true)` once if its surface is key.
-    /// Returns the daemon-assigned client id (stored in the per-connection state).
-    func addClient(fd: Int32, cols: Int, rows: Int) -> Int {
-        let id = nextClientID; nextClientID += 1
-        clients.append(Client(id: id, fd: fd, focused: false, cols: cols, rows: rows))
-        applyArbitratedSize()
-        return id
-    }
-
-    /// Drop a client (relay died / pane closed / detach). Re-arbitrates so the
-    /// surviving mirror's size takes over. Does NOT reap the PTY — a detached
-    /// session with zero clients stays alive (reaped only on shell Exited).
-    func removeClient(id: Int) {
-        clients.removeAll { $0.id == id }
-        applyArbitratedSize()
-    }
-
-    func clientIndex(id: Int) -> Int? { clients.firstIndex { $0.id == id } }
-
-    /// A client reported a new grid (its surface resized). Re-arbitrate.
-    func setClientGrid(id: Int, cols: Int, rows: Int) {
-        guard let i = clientIndex(id: id) else { return }
-        clients[i].cols = cols; clients[i].rows = rows
-        applyArbitratedSize()
-    }
-
-    /// A client gained/lost focus. Re-arbitrate (focused client drives the grid).
-    func setClientFocus(id: Int, focused: Bool) {
-        guard let i = clientIndex(id: id) else { return }
-        clients[i].focused = focused
-        applyArbitratedSize()
-    }
-
-    /// Pick the grid from the focused client (idle mirrors letterbox) and apply it
-    /// to the single shared PTY + libvterm via `resize`. No-op when no clients are
-    /// attached, or when arbitration leaves the grid unchanged.
-    func applyArbitratedSize() {
-        let infos = clients.map {
-            MirrorClient(clientID: $0.id, focused: $0.focused, cols: $0.cols, rows: $0.rows)
-        }
-        guard let (newCols, newRows) = arbitrateSize(infos) else { return }
-        guard Int32(newCols) != cols || Int32(newRows) != rows else { return }
-        resize(cols: Int32(newCols), rows: Int32(newRows))
-    }
+    func addClient(fd: Int32) { clients.append(fd) }
+    func removeClient(fd: Int32) { clients.removeAll { $0 == fd } }
 
     func writeInput(_ data: Data) {
         data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
@@ -176,22 +95,5 @@ final class Session {
 
     func markDead() { alive = false }
 
-    deinit {
-        vterm_free(vt)
-        callbacks.deallocate()
-        close(masterFD)
-    }
-}
-
-extension Session {
-    /// A stable raw-pointer identity for this session, used as the `user` arg of
-    /// libvterm screen callbacks (we can't pass Swift closures to C). Derived from
-    /// the object's address so it's unique and stable for the session's lifetime.
-    var screenKey: UnsafeMutableRawPointer { Unmanaged.passUnretained(self).toOpaque() }
-    func installScreenCallbacks(_ cbs: VTermScreenCallbacks, user: UnsafeMutableRawPointer) {
-        // Persist the struct in our owned storage; vterm keeps the pointer.
-        callbacks.pointee = cbs
-        vterm_screen_set_callbacks(screen, callbacks, user)
-        vterm_screen_enable_altscreen(screen, 1)
-    }
+    deinit { close(masterFD) }
 }

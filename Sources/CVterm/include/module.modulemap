@@ -1,4 +1,0 @@
-module CVterm {
-    umbrella header "cvterm.h"
-    export *
-}

@@ -32,23 +32,9 @@ let package = Package(
             name: "HaloMux",
             path: "Sources/HaloMux"
         ),
-        .target(
-            name: "CVterm",
-            path: "Sources/CVterm",
-            exclude: [
-                "vendor/LICENSE",
-                "vendor/VENDORING.txt",
-                "vendor/fullwidth.inc",
-                "vendor/encoding/DECdrawing.inc",
-                "vendor/encoding/uk.inc",
-            ],
-            sources: ["vendor"],
-            publicHeadersPath: "include",
-            cSettings: [.headerSearchPath("vendor"), .headerSearchPath("include")]
-        ),
         .executableTarget(
             name: "halod",
-            dependencies: ["HaloMux", "CVterm"],
+            dependencies: ["HaloMux"],
             path: "Sources/halod"
         ),
         .executableTarget(

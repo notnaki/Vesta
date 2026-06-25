@@ -1,6 +1,6 @@
 import Foundation
 
-public let muxProtocolVersion = 2
+public let muxProtocolVersion = 3
 
 public struct SessionInfo: Codable, Equatable {
     public let id: String
@@ -20,13 +20,13 @@ public enum ClientFrame: Equatable {
     case detach
     case kill
     case list
-    case focus(Bool)
 }
 
 public enum ServerFrame: Equatable {
     case helloAck(version: Int)
-    case needsUpdate(serverVersion: Int)
-    case snapshot(screen: Data, scrollback: Data, images: Data)
+    // On attach the daemon replays the raw output ring as a normal `output` frame
+    // (no separate snapshot/screen state — ghostty parses the bytes). Live output
+    // is the same frame. `exited` ends the session; `sessions` answers `list`.
     case output(Data)
     case exited(status: Int32)
     case sessions([SessionInfo])
@@ -71,9 +71,6 @@ public func encode(_ f: ClientFrame) -> Data {
     case .detach: return frame(0x04, p)
     case .kill:   return frame(0x05, p)
     case .list:   return frame(0x06, p)
-    case .focus(let on):
-        // tag 7, 1-byte payload: 1 = focused, 0 = idle mirror
-        return frame(0x07, Data([on ? 1 : 0]))
     }
 }
 
@@ -82,11 +79,6 @@ public func encode(_ f: ServerFrame) -> Data {
     switch f {
     case let .helloAck(version):
         putU32(UInt32(version), into: &p); return frame(0x11, p)
-    case let .needsUpdate(serverVersion):
-        putU32(UInt32(serverVersion), into: &p); return frame(0x12, p)
-    case let .snapshot(screen, scrollback, images):
-        putField(screen, into: &p); putField(scrollback, into: &p); putField(images, into: &p)
-        return frame(0x13, p)
     case let .output(data):
         putField(data, into: &p); return frame(0x14, p)
     case let .exited(status):
@@ -142,7 +134,6 @@ public func decodeClientFrame(from buf: inout Data) -> ClientFrame? {
     case 0x04: return .detach
     case 0x05: return .kill
     case 0x06: return .list
-    case 0x07: return .focus(payload.first == 1)
     default:   return nil
     }
 }
@@ -152,8 +143,6 @@ public func decodeServerFrame(from buf: inout Data) -> ServerFrame? {
     var r = Reader(payload)
     switch tag {
     case 0x11: return .helloAck(version: Int(r.u32()))
-    case 0x12: return .needsUpdate(serverVersion: Int(r.u32()))
-    case 0x13: return .snapshot(screen: r.field(), scrollback: r.field(), images: r.field())
     case 0x14: return .output(r.field())
     case 0x15: return .exited(status: Int32(bitPattern: r.u32()))
     case 0x16:
@@ -187,8 +176,6 @@ public func muxProtocolSelfCheck() {
     let info = SessionInfo(id: "p1", name: "build", cwd: "/tmp", alive: true, attachedCount: 2)
     let serverCases: [ServerFrame] = [
         .helloAck(version: 1),
-        .needsUpdate(serverVersion: 7),
-        .snapshot(screen: Data([1,2,3]), scrollback: Data([9,8]), images: Data([4])),
         .output(Data([0x68, 0x69])),
         .exited(status: 137),
         .sessions([info, SessionInfo(id: "p2", name: nil, cwd: nil, alive: false, attachedCount: 0)]),
@@ -212,16 +199,5 @@ public func muxProtocolSelfCheck() {
     var two = full
     assert(decodeClientFrame(from: &two) == .input(Data([0xaa, 0xbb, 0xcc])), "first of two decodes")
     assert(two == Data(truncated), "second (partial) frame left intact")
-    // M4: focus frame round-trips both ways, and a partial buffer yields nil
-    var fb = encode(ClientFrame.focus(true))
-    assert(decodeClientFrame(from: &fb) == .focus(true), "focus(true) round-trip")
-    assert(fb.isEmpty, "focus frame fully consumed")
-    var fb2 = encode(ClientFrame.focus(false))
-    assert(decodeClientFrame(from: &fb2) == .focus(false), "focus(false) round-trip")
-    var focusPartial = encode(ClientFrame.focus(true))
-    let focusFull = focusPartial
-    focusPartial.removeLast()                  // drop the payload byte
-    assert(decodeClientFrame(from: &focusPartial) == nil, "partial focus frame returns nil")
-    assert(focusPartial.count == focusFull.count - 1, "partial buffer left untouched")
     print("muxProtocolSelfCheck ok")
 }

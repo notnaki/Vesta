@@ -1,7 +1,12 @@
 # Halo — Multiplexer & Sessions Design ("better than tmux")
 
 Date: 2026-06-24
-Status: approved (verbal) → implementation plan next
+Status: **SUPERSEDED** by `2026-06-25-mux-rawring-rewrite.md`. The daemon-side
+libvterm "authoritative screen" + `screenSnapshot` redraw described below was
+the source of the garbled-output / broken-reattach bugs and has been removed.
+The daemon is now a dumb raw-byte ring (ghostty does all parsing). Sections on
+the wire protocol, image cache, disk-spill scrollback, mirroring and remote
+attach describe the old design and no longer match the code — kept for history.
 
 ## Goal
 
