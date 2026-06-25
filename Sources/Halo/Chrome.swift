@@ -54,6 +54,8 @@ final class HaloWindowController: NSWindowController {
 
     // Mutable container for the projects stack — cleared+refilled by setProjects.
     private var projectsStack: NSStackView!
+    private var projCount: NSTextField?      // PROJECTS count, pinned in the header (not scrolled)
+    private var projScroll: NSScrollView?    // wraps the project list; appearance tracks surface
 
     init(theme: Theme, content: NSView,
          onSelectSession: @escaping (Int, Int) -> Void = { _, _ in },
@@ -194,6 +196,7 @@ final class HaloWindowController: NSWindowController {
         surface = t.background
         window?.backgroundColor = surface
         sidebar?.layer?.backgroundColor = surface.cgColor
+        if let projScroll { applyScrollAppearance(projScroll) }
         flattenTitlebarSoon()
         prefixPill?.textColor = t.accent
         prefixPill?.layer?.borderColor = t.accent.cgColor
@@ -228,12 +231,8 @@ final class HaloWindowController: NSWindowController {
         let old = stack.arrangedSubviews
         old.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
 
-        // PROJECTS header row: section label + trailing "+" button.
-        // Pin trailing to stack so the header spans full sidebar width and the + sits at the right edge.
-        let headerRow = makeProjHeaderRow(count: projects.count)
-        stack.addArrangedSubview(headerRow)
-        headerRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
-        stack.setCustomSpacing(6, after: headerRow)
+        // The PROJECTS header is pinned outside the scroll view — just refresh its count here.
+        projCount?.stringValue = String(format: "%02d", projects.count)
 
         if projects.isEmpty {
             let empty = NSTextField(labelWithString: "no projects")
@@ -333,20 +332,39 @@ final class HaloWindowController: NSWindowController {
         edge.layer?.backgroundColor = hair(0.07).cgColor
         v.addSubview(edge)
 
-        // Scrollable content stack — top inset clears 30px titlebar zone
+        // PROJECTS header — pinned below the titlebar, NOT part of the scrolling list.
+        let header = makeProjHeaderRow(count: 0)
+        header.translatesAutoresizingMaskIntoConstraints = false
+        v.addSubview(header)
+
+        // The scrolling project list.
         let stack = NSStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 2
-        stack.edgeInsets = NSEdgeInsets(top: 48, left: 0, bottom: 0, right: 0)
+        stack.edgeInsets = NSEdgeInsets(top: 4, left: 0, bottom: 8, right: 0)
+        projectsStack = stack   // setProjects clears + refills it
 
-        // Preserve reference so setProjects can clear+refill it
-        projectsStack = stack
+        // Scroll the list so many projects/sessions don't grow the window. A flipped clip view
+        // anchors content to the top; the appearance tracks the surface so the overlay scroller
+        // knob matches the theme instead of defaulting to a light system knob.
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.scrollerStyle = .overlay
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentView = FlippedClipView()
+        scroll.contentView.drawsBackground = false
+        scroll.documentView = stack
+        applyScrollAppearance(scroll)
+        projScroll = scroll
 
         let footBlock = makeFooter()
 
-        v.addSubview(stack)
+        v.addSubview(scroll)
         v.addSubview(footBlock)
 
         NSLayoutConstraint.activate([
@@ -356,16 +374,33 @@ final class HaloWindowController: NSWindowController {
             edge.bottomAnchor.constraint(equalTo: v.bottomAnchor),
             edge.widthAnchor.constraint(equalToConstant: 1),
 
-            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: v.topAnchor),
+            header.topAnchor.constraint(equalTo: v.topAnchor, constant: 44),   // clears the titlebar
+            header.leadingAnchor.constraint(equalTo: v.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: v.trailingAnchor),
+
+            scroll.leadingAnchor.constraint(equalTo: v.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: v.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 6),
+            scroll.bottomAnchor.constraint(equalTo: footBlock.topAnchor, constant: -8),
+
+            // Document (stack) fills the clip width; its height is intrinsic → scrolls when tall.
+            stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
 
             footBlock.leadingAnchor.constraint(equalTo: v.leadingAnchor),
             footBlock.trailingAnchor.constraint(equalTo: v.trailingAnchor),
             footBlock.bottomAnchor.constraint(equalTo: v.bottomAnchor),
-            footBlock.topAnchor.constraint(greaterThanOrEqualTo: stack.bottomAnchor, constant: 8),
         ])
         return v
+    }
+
+    /// Match the scroller knob to the surface: a dark surface gets the dark appearance (light
+    /// knob), a light surface the aqua appearance — so the overlay scroller never clashes.
+    private func applyScrollAppearance(_ scroll: NSScrollView) {
+        let c = surface.usingColorSpace(.deviceRGB)
+        let lum = c.map { 0.299 * $0.redComponent + 0.587 * $0.greenComponent + 0.114 * $0.blueComponent } ?? 0
+        scroll.appearance = NSAppearance(named: lum < 0.5 ? .darkAqua : .aqua)
     }
 
     // MARK: – Row builders
@@ -704,6 +739,7 @@ final class HaloWindowController: NSWindowController {
         c.font = Fonts.inst(9.5)
         c.textColor = txt(.faint).withAlphaComponent(0.7)
         c.translatesAutoresizingMaskIntoConstraints = false
+        projCount = c   // pinned header builds this once; setProjects updates its value
 
         let row = NSView()
         row.translatesAutoresizingMaskIntoConstraints = false
@@ -959,6 +995,12 @@ final class TaggedRow: NSView {
 /// (returns nil from hitTest) so the titlebar still drags/zooms the window normally.
 private final class TitlebarBackingView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Top-anchored clip view: default NSClipView is bottom-up, which makes a short list sit at the
+/// bottom of the scroll area and scroll the wrong way. Flipping anchors content to the top.
+private final class FlippedClipView: NSClipView {
+    override var isFlipped: Bool { true }
 }
 
 /// NSMenuItem with a stored closure — avoids @objc/#selector for inline menu actions.
