@@ -116,43 +116,55 @@ final class HaloWindowController: NSWindowController {
 
     private weak var titlebarBacking: NSView?
 
-    /// `titlebarAppearsTransparent` clears the titlebar's background but leaves an
-    /// NSVisualEffectView that tints the strip ~7% lighter — a mismatched bar over a very
-    /// dark surface. Hiding it doesn't stick on a cold first window (AppKit resets `isHidden`
-    /// after our passes), so own a persistent opaque backing pinned over the titlebar. Insert
-    /// it just *below the accessory container* so the toggle/folder/dir and traffic lights stay
-    /// above it; it's click-through so window dragging still works. ponytail: a view graft is
-    /// the only durable handle AppKit gives for the titlebar material.
+    /// A transparent titlebar still shows two seams over a very dark surface: AppKit's faint
+    /// material/background view, and `_NSTitlebarDecorationView`'s bottom hairline at the
+    /// titlebar/content boundary (visible over the terminal, hidden over the same-colour
+    /// sidebar). Own an opaque backing pinned over the titlebar (sized via autoresizing —
+    /// Auto Layout doesn't work inside NSTitlebarView, which positions children by frame; it
+    /// collapsed to 0×0), extended a few px below to cover the boundary, and hide the
+    /// background/decoration/separator views. The backing is click-through so dragging works,
+    /// and the accessory + traffic lights are lifted back above it. ponytail: view grafts are
+    /// the only durable handle AppKit gives for the titlebar.
     func flattenTitlebar() {
+        window?.titlebarSeparatorStyle = .none
         guard let bar = window?.standardWindowButton(.closeButton)?.superview else { return }
         let backing = titlebarBacking ?? {
             let b = TitlebarBackingView()
             b.wantsLayer = true
-            b.translatesAutoresizingMaskIntoConstraints = false
-            bar.addSubview(b, positioned: .below, relativeTo: nil)
-            NSLayoutConstraint.activate([
-                b.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
-                b.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
-                b.topAnchor.constraint(equalTo: bar.topAnchor),
-                b.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
-            ])
+            b.translatesAutoresizingMaskIntoConstraints = true
+            b.autoresizingMask = [.width, .height]
+            bar.addSubview(b)
             titlebarBacking = b
             return b
         }()
+        backing.frame = bar.bounds.insetBy(dx: 0, dy: -6)   // cover the titlebar + the boundary seam
         backing.layer?.backgroundColor = surface.cgColor
-        // Re-seat just below the accessory's container (a direct child of the titlebar) so the
-        // backing covers the material yet the accessory + traffic lights remain above it.
+        // Front so it covers the material wherever it sits; then lift the accessory + traffic
+        // lights back above it so they stay visible and clickable.
+        bar.addSubview(backing, positioned: .above, relativeTo: nil)
         var node: NSView? = toggleButton
         while let n = node, n.superview !== bar { node = n.superview }
         if let accChild = node, accChild.superview === bar {
-            bar.addSubview(backing, positioned: .below, relativeTo: accChild)
+            bar.addSubview(accChild, positioned: .above, relativeTo: backing)
         }
-        // Belt-and-suspenders: also hide the material outright where we can reach it.
-        func hide(_ v: NSView) {
-            if v is NSVisualEffectView, v !== backing { v.isHidden = true }
-            v.subviews.forEach(hide)
+        for type: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
+            if let b = window?.standardWindowButton(type), b.superview === bar {
+                bar.addSubview(b, positioned: .above, relativeTo: nil)
+            }
         }
-        bar.subviews.forEach(hide)
+        // Belt-and-suspenders: hide the material/background and the decoration hairline.
+        if let frame = window?.contentView?.superview {
+            func hide(_ v: NSView) {
+                let n = "\(type(of: v))"
+                if v !== backing,
+                   v is NSVisualEffectView || n.contains("Separator")
+                     || n.contains("Decoration") || n.contains("TitlebarBackground") {
+                    v.isHidden = true
+                }
+                v.subviews.forEach(hide)
+            }
+            frame.subviews.forEach(hide)
+        }
     }
 
     /// The titlebar's effect view is created lazily — on a cold first window it can appear
