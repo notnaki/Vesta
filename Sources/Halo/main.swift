@@ -118,11 +118,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// halo.panel: create (id 0) or update (existing id) a plugin panel in the key window.
     /// Returns the panel id. Corner is fixed at creation.
-    func luaPanelSet(_ lines: [String], _ title: String, _ corner: String, _ id: Int) -> Int {
-        if id > 0, let panel = luaPanels[id] { panel.update(title: title, lines: lines); return id }
+    func luaPanelSet(_ lines: [PanelLine], _ opts: PanelOpts) -> Int {
+        if opts.id > 0, let panel = luaPanels[opts.id] {
+            panel.update(title: opts.title, lines: lines).forEach { luaUnref($0) }   // free old click refs
+            return opts.id
+        }
         guard let host = active?.controller.window?.contentView else { return 0 }
-        let c = PanelOverlay.Corner(rawValue: corner) ?? .topright
-        let panel = PanelOverlay(theme: theme, title: title, lines: lines, corner: c)
+        let panel = PanelOverlay(theme: theme, lines: lines, opts: opts)
         host.addSubview(panel)
         panel.pin(into: host)
         luaPanelCounter += 1
@@ -283,9 +285,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         luaClearTimers = { [weak self] in self?.luaTimers.forEach { $0.invalidate() }; self?.luaTimers.removeAll() }
         luaShowPicker = { [weak self] items, ref in self?.showPicker(items, ref) }
         luaSetStatus = { [weak self] s in self?.windows.forEach { $0.controller.setLuaStatus(s) } }
-        luaPanel = { [weak self] lines, title, corner, id in self?.luaPanelSet(lines, title, corner, id) ?? 0 }
-        luaClosePanel = { [weak self] id in self?.luaPanels[id]?.removeFromSuperview(); self?.luaPanels[id] = nil }
-        luaClearPanels = { [weak self] in self?.luaPanels.values.forEach { $0.removeFromSuperview() }; self?.luaPanels.removeAll() }
+        luaPanel = { [weak self] lines, opts in self?.luaPanelSet(lines, opts) ?? 0 }
+        luaClosePanel = { [weak self] id in
+            if let p = self?.luaPanels[id] { p.clickRefs.forEach { luaUnref($0) }; p.removeFromSuperview() }
+            self?.luaPanels[id] = nil }
+        luaClearPanels = { [weak self] in
+            self?.luaPanels.values.forEach { p in p.clickRefs.forEach { luaUnref($0) }; p.removeFromSuperview() }
+            self?.luaPanels.removeAll() }
         luaShowPrompt = { [weak self] msg, ref in self?.showPrompt(msg, ref) }
         LuaRuntime.shared.start()   // embedded Lua: run ~/.config/halo/init.lua
 

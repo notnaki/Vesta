@@ -20,7 +20,7 @@ nonisolated(unsafe) var luaScheduleTimer: (Double, Int32) -> Void = { _, _ in } 
 nonisolated(unsafe) var luaClearTimers: () -> Void = {}                                     // reset on reload
 nonisolated(unsafe) var luaShowPicker: ([String], Int32) -> Void = { _, _ in }             // halo.pick
 nonisolated(unsafe) var luaSetStatus: (String) -> Void = { _ in }                          // halo.status
-nonisolated(unsafe) var luaPanel: ([String], String, String, Int) -> Int = { _, _, _, _ in 0 }  // halo.panel → id
+nonisolated(unsafe) var luaPanel: ([PanelLine], PanelOpts) -> Int = { _, _ in 0 }           // halo.panel → id
 nonisolated(unsafe) var luaClosePanel: (Int) -> Void = { _ in }                            // halo.close
 nonisolated(unsafe) var luaClearPanels: () -> Void = {}                                     // reset on reload
 nonisolated(unsafe) var luaShowPrompt: (String, Int32) -> Void = { _, _ in }               // halo.prompt
@@ -144,14 +144,45 @@ private func luaStringArray(_ L: OpaquePointer?, _ idx: Int32) -> [String] {
     return out
 }
 
-/// halo.panel(lines [, title [, corner [, id]]]) → id. With an existing id it updates that
-/// panel; otherwise it creates one. Plugins build live custom UI with it (+ halo.timer).
+/// Read the panel `lines` array: each element is a string OR a table {text, color, click}.
+private func panelLines(_ L: OpaquePointer?, _ idx: Int32) -> [PanelLine] {
+    luaL_checktype(L, idx, halo_lua_ttable())
+    let len = Int(lua_rawlen(L, idx))
+    var out: [PanelLine] = []
+    guard len > 0 else { return out }
+    for i in 1...len {
+        lua_rawgeti(L, idx, lua_Integer(i))                 // push element (-1)
+        if lua_isstring(L, -1) != 0 {
+            out.append(PanelLine(text: lua_tolstring(L, -1, nil).map { String(cString: $0) } ?? ""))
+            lua_settop(L, -2)
+        } else {
+            var line = PanelLine(text: "")
+            lua_getfield(L, -1, "text");  line.text = lua_tolstring(L, -1, nil).map { String(cString: $0) } ?? ""; lua_settop(L, -2)
+            lua_getfield(L, -1, "color"); line.colorHex = lua_tolstring(L, -1, nil).map { String(cString: $0) }; lua_settop(L, -2)
+            lua_getfield(L, -1, "click")
+            if lua_type(L, -1) == halo_lua_tfunction() { line.clickRef = luaL_ref(L, halo_lua_registryindex()) }  // pops fn
+            else { lua_settop(L, -2) }
+            out.append(line)
+            lua_settop(L, -2)                               // pop element table
+        }
+    }
+    return out
+}
+
+/// halo.panel(lines [, opts]) → id. opts = {title, corner, bg, width, id}. With an existing
+/// id it updates that panel in place; otherwise it creates one. The custom-UI workhorse.
 private func l_halo_panel(_ L: OpaquePointer?) -> Int32 {
-    let lines = luaStringArray(L, 1)
-    let title  = lua_tolstring(L, 2, nil).map { String(cString: $0) } ?? ""
-    let corner = lua_tolstring(L, 3, nil).map { String(cString: $0) } ?? "topright"
-    let id = lua_gettop(L) >= 4 ? Int(lua_tointegerx(L, 4, nil)) : 0
-    lua_pushinteger(L, lua_Integer(luaPanel(lines, title, corner, id)))
+    let lines = panelLines(L, 1)
+    var o = PanelOpts()
+    if lua_type(L, 2) == halo_lua_ttable() {
+        func str(_ k: String) -> String? { lua_getfield(L, 2, k); defer { lua_settop(L, -2) }; return lua_tolstring(L, -1, nil).map { String(cString: $0) } }
+        if let t = str("title") { o.title = t }
+        if let c = str("corner") { o.corner = c }
+        o.bgHex = str("bg")
+        lua_getfield(L, 2, "id");    o.id = Int(lua_tointegerx(L, -1, nil)); lua_settop(L, -2)
+        lua_getfield(L, 2, "width"); o.width = lua_tonumberx(L, -1, nil);    lua_settop(L, -2)
+    }
+    lua_pushinteger(L, lua_Integer(luaPanel(lines, o)))
     return 1
 }
 /// halo.close(id) — remove a panel created by halo.panel.
