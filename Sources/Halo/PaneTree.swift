@@ -168,9 +168,12 @@ final class PaneTree {
         applyPendingRatios()
     }
 
-    /// The top-left leaf's paneID in a serialized layout (recurses into the `a` branch).
+    /// The first terminal leaf's paneID in a serialized layout (DFS, so it skips a
+    /// browser top-left leaf — which has no paneID — and finds the next terminal).
     private static func firstLeafID(_ node: [String: Any]) -> String? {
-        if let a = node["a"] as? [String: Any] { return firstLeafID(a) }
+        if let a = node["a"] as? [String: Any], let b = node["b"] as? [String: Any] {
+            return firstLeafID(a) ?? firstLeafID(b)
+        }
         return node["paneID"] as? String
     }
 
@@ -276,7 +279,7 @@ final class PaneTree {
     /// Explicit kill (prefix-x / menu): terminate the shell under halod, then close
     /// the pane locally. Distinct from Cmd-W, which only detaches.
     func killFocusedSession() {
-        if let pane = focused { MuxClient.kill(paneID: pane.paneID) }
+        if let pane = focused { TerminalPane.suppressExit(pane.paneID); MuxClient.kill(paneID: pane.paneID) }
         closeFocused()
     }
 
@@ -432,7 +435,8 @@ final class PaneTree {
     /// sticks. ponytail: best-effort — if never mounted, panes stay evenly split.
     private func applyPendingRatios() {
         guard !pendingRatios.isEmpty else { return }
-        for delay in [0.0, 0.1, 0.3, 0.6] {
+        let schedule = [0.0, 0.1, 0.3, 0.6]
+        for delay in schedule {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self else { return }
                 for (sv, ratio) in self.pendingRatios.reversed() {   // outer splits first
@@ -440,6 +444,7 @@ final class PaneTree {
                     guard extent > 1 else { continue }
                     sv.setPosition((extent - sv.dividerThickness) * CGFloat(ratio), ofDividerAt: 0)
                 }
+                if delay == schedule.last { self.pendingRatios.removeAll() }   // done; drop split refs
             }
         }
     }

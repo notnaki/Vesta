@@ -31,6 +31,7 @@ final class PaneOutputTap: @unchecked Sendable {
     // shared between q (producer) and main (consumer), under `lock`:
     private let lock = NSLock()
     private var pending = Data()
+    private var pendingPaneID: String?   // owner of `pending` — must travel WITH the buffer
     private var deliveryScheduled = false
 
     /// Point the tap at the focused pane (or nil/none to stop). Call on the main thread.
@@ -60,7 +61,7 @@ final class PaneOutputTap: @unchecked Sendable {
     private func _teardown() {
         source?.cancel(); source = nil   // cancel handler closes the fd
         fd = -1; paneID = nil; inbuf.removeAll()
-        lock.lock(); pending.removeAll(); deliveryScheduled = false; lock.unlock()
+        lock.lock(); pending.removeAll(); pendingPaneID = nil; deliveryScheduled = false; lock.unlock()
     }
 
     private func onReadable() {
@@ -78,6 +79,8 @@ final class PaneOutputTap: @unchecked Sendable {
             case let .helloAck(v):
                 if v != muxProtocolVersion { _teardown(); return }   // version mismatch → bail
             case .exited:
+                // Belt-and-suspenders: the daemon doesn't send subscribers `.exited`
+                // (only attached clients); we normally learn of death via EOF below.
                 _teardown(); return
             case .sessions:
                 break
@@ -85,23 +88,28 @@ final class PaneOutputTap: @unchecked Sendable {
         }
     }
 
-    /// Accumulate output and schedule (at most) one main-thread delivery per burst.
+    /// Accumulate output and schedule (at most) one main-thread delivery per burst. The
+    /// pane identity is stored WITH the buffer (not captured by the delivery closure) so a
+    /// retarget between schedule and pickup can't mislabel the bytes (review finding A).
     private func coalesce(_ bytes: Data, paneID: String) {
         lock.lock()
-        pending.append(bytes)
+        pending.append(bytes); pendingPaneID = paneID
         if pending.count > cap { pending.removeFirst(pending.count - cap) }   // drop oldest under flood
         let schedule = !deliveryScheduled
         if schedule { deliveryScheduled = true }
         lock.unlock()
         if schedule {
-            DispatchQueue.main.async { MainActor.assumeIsolated { self.deliver(paneID: paneID) } }
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.deliver() } }
         }
     }
 
-    @MainActor private func deliver(paneID: String) {
-        lock.lock(); let data = pending; pending.removeAll(); deliveryScheduled = false; lock.unlock()
-        guard !data.isEmpty else { return }
-        luaFirePaneOutput(paneID: paneID, chunk: data)
+    @MainActor private func deliver() {
+        lock.lock()
+        let data = pending, pid = pendingPaneID
+        pending.removeAll(); pendingPaneID = nil; deliveryScheduled = false
+        lock.unlock()
+        guard !data.isEmpty, let pid else { return }
+        luaFirePaneOutput(paneID: pid, chunk: data)
     }
 
     /// Connect to the daemon and send a subscribe frame for `paneID`. The fd is

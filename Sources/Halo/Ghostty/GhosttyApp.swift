@@ -318,9 +318,12 @@ final class GhosttyApp {
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 let pane = Unmanaged<TerminalPane>.fromOpaque(ud).takeUnretainedValue()
-                // Shell exited on its own (vs. user-initiated close, which fires
-                // session-closed from Tabs). Only when the process actually ended.
-                if !processAlive { luaFire("session-exited", pane.paneID) }
+                // Shell exited on its own → session-exited. Suppressed when the user
+                // intentionally closed it (session-closed already fired) or when a
+                // duplicate close_surface arrives for the same pane (shouldFireExit latches).
+                if !processAlive, TerminalPane.shouldFireExit(pane.paneID) {
+                    luaFire("session-exited", pane.paneID)
+                }
                 pane.onUpdate?()
             }
         }

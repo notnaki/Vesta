@@ -12,6 +12,8 @@ final class Daemon {
     private var clientSession: [Int32: String] = [:]
     // fd → paneID for passive output-only subscribers (GUI pane-output taps).
     private var subscriberSession: [Int32: String] = [:]
+    // Subscribers that arrived before their session existed, waiting to be bound on .hello.
+    private var pendingSubscribers: [String: [Int32]] = [:]
 
     func run() {
         MuxPaths.ensureDirs()
@@ -149,7 +151,11 @@ final class Daemon {
 
     private func closeClient(_ fd: Int32) {
         if let paneID = clientSession[fd] { sessions[paneID]?.removeClient(fd: fd) }
-        if let paneID = subscriberSession[fd] { sessions[paneID]?.removeSubscriber(fd: fd) }
+        if let paneID = subscriberSession[fd] {
+            sessions[paneID]?.removeSubscriber(fd: fd)
+            pendingSubscribers[paneID]?.removeAll { $0 == fd }   // may still be unbound
+            if pendingSubscribers[paneID]?.isEmpty == true { pendingSubscribers[paneID] = nil }
+        }
         clientSession[fd] = nil; subscriberSession[fd] = nil; clientBufs[fd] = nil; close(fd)
     }
 
@@ -168,6 +174,10 @@ final class Daemon {
                     return
                 }
                 sessions[paneID] = fresh; s = fresh
+            }
+            // Bind any subscribers that arrived before this session existed (review finding B).
+            if let waiting = pendingSubscribers.removeValue(forKey: paneID) {
+                for w in waiting { s.addSubscriber(fd: w) }
             }
             s.addClient(fd: fd)
             clientSession[fd] = paneID
@@ -198,15 +208,14 @@ final class Daemon {
                 alive: $0.alive, attachedCount: $0.clients.count) }
             if !sendFrame(fd, encode(ServerFrame.sessions(infos))) { closeClient(fd) }
         case let .subscribe(paneID):
-            // Passive output-only reader. Attach to an EXISTING session only — never
-            // create one (avoids racing halo-attach's spawn). No ring replay (we want
-            // new output, not history); excluded from attachedCount (list uses .clients).
-            // Always ack so the client can version-gate; if no session yet, it stays
-            // unbound and the client retries on the next focus change.
-            if let s = sessions[paneID] {
-                s.addSubscriber(fd: fd)
-                subscriberSession[fd] = paneID
-            }
+            // Passive output-only reader. Never creates a session (avoids racing
+            // halo-attach's spawn). No ring replay (we want new output, not history);
+            // excluded from attachedCount (list uses .clients). If the session doesn't
+            // exist yet, queue this fd and bind it when .hello creates the session, so a
+            // subscribe that wins the race against spawn isn't stuck unbound (finding B).
+            subscriberSession[fd] = paneID
+            if let s = sessions[paneID] { s.addSubscriber(fd: fd) }
+            else { pendingSubscribers[paneID, default: []].append(fd) }
             if !sendFrame(fd, encode(ServerFrame.helloAck(version: muxProtocolVersion))) { closeClient(fd) }
         }
     }

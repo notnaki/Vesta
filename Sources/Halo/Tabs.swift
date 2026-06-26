@@ -244,7 +244,7 @@ final class Workspace {
         // Closing a session KILLS its daemon shell — the sidebar is the single source of
         // truth, so there are no orphaned detached sessions. (Window-close still only
         // detaches, since it doesn't drop the PaneTree from the shared store.)
-        closing.paneIDs.forEach { MuxClient.kill(paneID: $0) }
+        closing.paneIDs.forEach { TerminalPane.suppressExit($0); MuxClient.kill(paneID: $0) }
         luaFire("session-closed", closing.paneID)
         // If this was a worktree session, best-effort remove its worktree dir
         // off-main (non-force → dirty worktrees are left intact, never destroyed).
