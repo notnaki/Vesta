@@ -11,6 +11,8 @@ final class ConfirmOverlay: NSView {
     private let noBtn = NSTextField(labelWithString: "No")
     private let yesPad = NSView()
     private let noPad = NSView()
+    private let panel = NSView()
+    private var done = false                 // one-shot guard (avoids a double callback/unref)
 
     init(theme: Theme, message: String, onChoose: @escaping (Bool) -> Void) {
         self.theme = theme
@@ -28,7 +30,6 @@ final class ConfirmOverlay: NSView {
     }
 
     private func build(message: String) {
-        let panel = NSView()
         panel.translatesAutoresizingMaskIntoConstraints = false
         panel.wantsLayer = true
         panel.layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.98).cgColor
@@ -92,9 +93,14 @@ final class ConfirmOverlay: NSView {
         }
     }
 
-    @objc private func clickYes() { onChoose(true) }
-    @objc private func clickNo() { onChoose(false) }
-    override func mouseDown(with event: NSEvent) { onChoose(false) }   // click scrim → cancel
+    private func fire(_ v: Bool) { guard !done else { return }; done = true; onChoose(v) }
+    @objc private func clickYes() { fire(true) }
+    @objc private func clickNo() { fire(false) }
+    override func mouseDown(with event: NSEvent) {
+        // Only a click on the bare scrim cancels. A click that bubbles up from a button's
+        // padding keeps its in-panel location, so it doesn't cancel (the gesture handles it).
+        if !panel.frame.contains(convert(event.locationInWindow, from: nil)) { fire(false) }
+    }
 
     override var acceptsFirstResponder: Bool { true }
     override func viewDidMoveToWindow() {
@@ -105,13 +111,13 @@ final class ConfirmOverlay: NSView {
         case 123, 124, 48:                       // ←, →, Tab → toggle
             yes.toggle(); restyle()
         case 36, 76:                             // Return / Enter → confirm highlighted
-            onChoose(yes)
+            fire(yes)
         case 53:                                 // Esc → cancel (No)
-            onChoose(false)
+            fire(false)
         default:
             switch event.charactersIgnoringModifiers?.lowercased() {
-            case "y": onChoose(true)
-            case "n": onChoose(false)
+            case "y": fire(true)
+            case "n": fire(false)
             default: super.keyDown(with: event)
             }
         }

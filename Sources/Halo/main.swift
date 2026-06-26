@@ -117,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Mount a picker overlay in the key window (or free `refs` and bail if one is already up).
     private func presentPicker(_ make: (NSView, @escaping () -> Void) -> PickerOverlay?, freeing refs: [Int32]) {
         guard let host = active?.controller.window?.contentView,
-              !host.subviews.contains(where: { $0 is PickerOverlay }) else { refs.forEach { luaUnref($0) }; return }
+              !host.subviews.contains(where: { $0 is PickerOverlay || $0 is ConfirmOverlay }) else { refs.forEach { luaUnref($0) }; return }
         let dismiss: () -> Void = { [weak host] in host?.subviews.compactMap { $0 as? PickerOverlay }.forEach { $0.removeFromSuperview() } }
         guard let overlay = make(host, dismiss) else { return }
         overlay.frame = host.bounds

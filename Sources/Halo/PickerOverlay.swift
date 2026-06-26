@@ -54,14 +54,6 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
 
     // MARK: Convenience inits (preserve existing call sites)
 
-    /// Single-select string picker (`halo.pick` of plain strings; also `halo.confirm`).
-    convenience init(theme: Theme, items: [String], onChoose: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        let pis = items.map { PickItem(label: $0, desc: nil) }
-        self.init(theme: theme, items: pis, multiSelect: false, isPrompt: false,
-                  onIndices: { idx in if let i = idx.first { onChoose(pis[i].label) } },
-                  onText: { _ in }, onCancel: onCancel)
-    }
-
     /// Single-select rich picker returning the chosen index (`halo.pick` with descriptions,
     /// `halo.menu`). Multi-select variant returns every marked index.
     convenience init(theme: Theme, richItems: [PickItem], multiSelect: Bool, opts: PickOpts = PickOpts(),
