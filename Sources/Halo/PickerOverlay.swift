@@ -1,48 +1,76 @@
 import AppKit
 
-/// A generic fuzzy-ish picker overlay (the UI primitive behind `halo.pick`). A dim scrim
-/// over the window with a search field + filtered list; type to filter (case-insensitive
-/// substring), ↑/↓ to move, Enter to choose, Esc to cancel. Plugins use this to build
-/// fzf-style pickers — the kind of UI that was impossible before.
+/// One row of a picker: a label plus an optional dimmed description (command-palette style).
+struct PickItem { let label: String; let desc: String? }
+
+/// Per-call sizing for a picker (from halo.pick/menu/pickmulti opts). All optional:
+/// `width` overrides the default; `fixedHeight` forces the list area to that height (the
+/// old always-tall look); otherwise the list hugs its rows up to `maxHeight`, then scrolls.
+struct PickOpts {
+    var width: CGFloat? = nil       // nil → hug the widest row (clamped); set → fixed width
+    var fixedHeight: CGFloat? = nil
+    var maxHeight: CGFloat = 440
+}
+
+private final class FlippedClipView: NSClipView { override var isFlipped: Bool { true } }
+
+/// A generic picker overlay (the UI behind `halo.pick`, `halo.menu`, `halo.pickmulti`,
+/// `halo.prompt`, `halo.confirm`). A dim scrim over the window with a search field + filtered
+/// list; type to filter (case-insensitive substring on the label), ↑/↓ to move, Enter to
+/// choose, Esc to cancel. In multi-select mode Tab marks/unmarks and Enter confirms the set.
 final class PickerOverlay: NSView, NSTextFieldDelegate {
     private let theme: Theme
-    private let allItems: [String]
-    private var shown: [String] = []
-    private var selected = 0
+    private let items: [PickItem]
+    private var shown: [Int] = []          // indices into `items`, after filtering
+    private var cursor = 0                  // index into `shown`
+    private var marked: Set<Int> = []       // indices into `items` (multi-select)
+    private let multiSelect: Bool
+    private let isPrompt: Bool
+    private let onIndices: ([Int]) -> Void  // chosen item indices (single → one element)
+    private let onText: (String) -> Void    // prompt text
+    private let onCancel: () -> Void
     private let input = NSTextField()
     private let listStack = NSStackView()
-    private let onChoose: (String) -> Void
-    private let onCancel: () -> Void
-    private var isPrompt = false   // free-text input (halo.prompt) vs list pick (halo.pick)
+    private let opts: PickOpts
 
-    /// Free-text prompt (halo.prompt): a field with no list; Enter submits the typed text.
-    /// `initial` pre-fills the field (halo.prompt's optional default).
-    convenience init(theme: Theme, prompt: String, initial: String = "",
-                     onSubmit: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        self.init(theme: theme, items: [], onChoose: onSubmit, onCancel: onCancel)
-        isPrompt = true
-        input.placeholderString = prompt
-        input.stringValue = initial
-    }
-
-    /// Yes/No confirm (halo.confirm): a two-item pick with the message as the field label.
-    /// Enter on the highlighted item chooses; Esc cancels (treated as No by the caller).
-    convenience init(theme: Theme, confirm message: String,
-                     onChoose: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        self.init(theme: theme, items: ["Yes", "No"], onChoose: onChoose, onCancel: onCancel)
-        input.placeholderString = message
-    }
-
-    init(theme: Theme, items: [String], onChoose: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+    /// Designated init: index-based selection over `items`.
+    private init(theme: Theme, items: [PickItem], multiSelect: Bool, isPrompt: Bool,
+                 opts: PickOpts = PickOpts(),
+                 onIndices: @escaping ([Int]) -> Void, onText: @escaping (String) -> Void,
+                 onCancel: @escaping () -> Void) {
         self.theme = theme
-        self.allItems = items
-        self.onChoose = onChoose
+        self.items = items
+        self.multiSelect = multiSelect
+        self.isPrompt = isPrompt
+        self.opts = opts
+        self.onIndices = onIndices
+        self.onText = onText
         self.onCancel = onCancel
         super.init(frame: .zero)
         build()
         apply(query: "")
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    // MARK: Convenience inits (preserve existing call sites)
+
+    /// Single-select rich picker returning the chosen index (`halo.pick` with descriptions,
+    /// `halo.menu`). Multi-select variant returns every marked index.
+    convenience init(theme: Theme, richItems: [PickItem], multiSelect: Bool, opts: PickOpts = PickOpts(),
+                     onPick: @escaping ([Int]) -> Void, onCancel: @escaping () -> Void) {
+        self.init(theme: theme, items: richItems, multiSelect: multiSelect, isPrompt: false, opts: opts,
+                  onIndices: onPick, onText: { _ in }, onCancel: onCancel)
+    }
+
+    /// Free-text prompt (`halo.prompt`): a field with no list; Enter submits the typed text.
+    /// Fixed-width (no list to hug, and free text wants room).
+    convenience init(theme: Theme, prompt: String, initial: String = "",
+                     onSubmit: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+        self.init(theme: theme, items: [], multiSelect: false, isPrompt: true, opts: PickOpts(width: 520),
+                  onIndices: { _ in }, onText: onSubmit, onCancel: onCancel)
+        input.placeholderString = prompt
+        input.stringValue = initial
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         NSColor.black.withAlphaComponent(0.35).setFill(); dirtyRect.fill()
@@ -62,7 +90,7 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
         panel.layer?.borderColor = theme.accent.withAlphaComponent(0.5).cgColor
         addSubview(panel)
 
-        input.placeholderString = "Filter…"
+        input.placeholderString = multiSelect ? "Filter… (Tab to mark, Enter to confirm)" : "Filter…"
         input.delegate = self
         input.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
         input.focusRingType = .none
@@ -78,17 +106,22 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
 
         let scroll = NSScrollView()
         scroll.drawsBackground = false
-        scroll.hasVerticalScroller = false
+        scroll.hasVerticalScroller = true          // overflow is scrollable + discoverable
+        scroll.scrollerStyle = .overlay            // floats over content, reserves no width
+        scroll.autohidesScrollers = true           // hidden until the list actually overflows
         scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.contentView = FlippedClipView()     // top-anchor the list so it hugs from the top
         scroll.documentView = listStack
 
         panel.addSubview(input)
         panel.addSubview(scroll)
-        NSLayoutConstraint.activate([
+        // Sizing: width from opts. Height — if opts.fixedHeight is set, the list area is
+        // exactly that (the old always-tall look); otherwise it hugs its rows up to
+        // opts.maxHeight, then scrolls. Always capped to the window so it never overflows.
+        var cons: [NSLayoutConstraint] = [
             panel.topAnchor.constraint(equalTo: topAnchor, constant: 90),
             panel.centerXAnchor.constraint(equalTo: centerXAnchor),
-            panel.widthAnchor.constraint(equalToConstant: 520),
-            panel.heightAnchor.constraint(lessThanOrEqualToConstant: 380),
+            panel.widthAnchor.constraint(equalToConstant: opts.width ?? contentWidth()),
             input.topAnchor.constraint(equalTo: panel.topAnchor, constant: 14),
             input.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 16),
             input.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -16),
@@ -96,32 +129,66 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
             scroll.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 8),
             scroll.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -8),
             scroll.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -10),
-            scroll.heightAnchor.constraint(lessThanOrEqualToConstant: 320),
+            scroll.heightAnchor.constraint(lessThanOrEqualTo: heightAnchor, multiplier: 0.8),
             listStack.widthAnchor.constraint(equalTo: scroll.widthAnchor),
-        ])
+        ]
+        if let h = opts.fixedHeight {
+            let fixed = scroll.heightAnchor.constraint(equalToConstant: h)
+            fixed.priority = .defaultHigh   // yields to the window cap above
+            cons.append(fixed)
+        } else {
+            let hug = scroll.heightAnchor.constraint(equalTo: listStack.heightAnchor)
+            hug.priority = .defaultHigh     // hug content; the caps below win when exceeded
+            cons += [hug, scroll.heightAnchor.constraint(lessThanOrEqualToConstant: opts.maxHeight)]
+        }
+        NSLayoutConstraint.activate(cons)
     }
 
     private func apply(query: String) {
         let q = query.lowercased()
-        shown = q.isEmpty ? allItems : allItems.filter { $0.lowercased().contains(q) }
-        selected = 0
+        shown = items.indices.filter { q.isEmpty || items[$0].label.lowercased().contains(q) }
+        cursor = 0
         rebuildRows()
+    }
+
+    private static let rowFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+
+    private func rowText(_ itemIndex: Int) -> NSAttributedString {
+        let it = items[itemIndex]
+        let f = PickerOverlay.rowFont
+        let s = NSMutableAttributedString()
+        if multiSelect {
+            s.append(NSAttributedString(string: marked.contains(itemIndex) ? "✓ " : "  ",
+                                        attributes: [.foregroundColor: theme.accent, .font: f]))
+        }
+        s.append(NSAttributedString(string: it.label, attributes: [.foregroundColor: NSColor(white: 0.92, alpha: 1), .font: f]))
+        if let d = it.desc, !d.isEmpty {
+            s.append(NSAttributedString(string: "  \(d)", attributes: [.foregroundColor: NSColor(white: 0.5, alpha: 1), .font: f]))
+        }
+        return s
+    }
+
+    /// Default width: the widest row (or the filter placeholder) plus padding, clamped to a
+    /// sane range so a tiny list isn't cramped and a long label doesn't run off-screen.
+    private func contentWidth() -> CGFloat {
+        var w: CGFloat = 0
+        for i in items.indices { w = max(w, rowText(i).size().width) }
+        let ph = (input.placeholderString ?? "") as NSString
+        w = max(w, ph.size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)]).width)
+        return min(680, max(300, ceil(w) + 56))   // + row/scroll/panel horizontal padding
     }
 
     private func rebuildRows() {
         listStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for (i, item) in shown.prefix(200).enumerated() {
-            let row = NSTextField(labelWithString: item)
+        for (i, itemIndex) in shown.prefix(200).enumerated() {
+            let row = NSTextField(labelWithAttributedString: rowText(itemIndex))
             row.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-            row.textColor = NSColor(white: 0.9, alpha: 1)
             row.lineBreakMode = .byTruncatingTail
-            row.wantsLayer = true
-            row.layer?.cornerRadius = 4
             row.translatesAutoresizingMaskIntoConstraints = false
             let pad = NSView()
             pad.translatesAutoresizingMaskIntoConstraints = false
             pad.wantsLayer = true
-            pad.layer?.backgroundColor = (i == selected ? theme.accent.withAlphaComponent(0.30) : .clear).cgColor
+            pad.layer?.backgroundColor = (i == cursor ? theme.accent.withAlphaComponent(0.30) : .clear).cgColor
             pad.layer?.cornerRadius = 4
             pad.addSubview(row)
             listStack.addArrangedSubview(pad)
@@ -138,16 +205,22 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
 
     func controlTextDidChange(_ obj: Notification) { apply(query: input.stringValue) }
 
-    // Arrows / Enter / Esc come through the field editor.
+    // Arrows / Tab / Enter / Esc come through the field editor.
     func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
         switch sel {
         case #selector(NSResponder.moveDown(_:)):
-            if !shown.isEmpty { selected = min(selected + 1, shown.count - 1); rebuildRows() }; return true
+            if !shown.isEmpty { cursor = min(cursor + 1, shown.count - 1); rebuildRows() }; return true
         case #selector(NSResponder.moveUp(_:)):
-            if !shown.isEmpty { selected = max(selected - 1, 0); rebuildRows() }; return true
+            if !shown.isEmpty { cursor = max(cursor - 1, 0); rebuildRows() }; return true
+        case #selector(NSResponder.insertTab(_:)):
+            guard multiSelect, shown.indices.contains(cursor) else { return true }
+            let it = shown[cursor]
+            if marked.contains(it) { marked.remove(it) } else { marked.insert(it) }
+            rebuildRows(); return true
         case #selector(NSResponder.insertNewline(_:)):
-            if isPrompt { onChoose(input.stringValue) }
-            else if shown.indices.contains(selected) { onChoose(shown[selected]) }
+            if isPrompt { onText(input.stringValue) }
+            else if multiSelect { onIndices(marked.sorted()) }
+            else if shown.indices.contains(cursor) { onIndices([shown[cursor]]) }
             else { onCancel() }
             return true
         case #selector(NSResponder.cancelOperation(_:)):
@@ -156,8 +229,7 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
         }
     }
 
-    /// Focus the text field once we're in the window hierarchy (async so the window is
-    /// ready). Without this the field never gets keyboard focus and you can't type.
+    /// Focus the text field once we're in the window hierarchy (async so the window is ready).
     override func viewDidMoveToWindow() {
         DispatchQueue.main.async { [weak self] in guard let self else { return }; self.window?.makeFirstResponder(self.input) }
     }
