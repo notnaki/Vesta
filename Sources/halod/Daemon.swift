@@ -23,10 +23,14 @@ final class Daemon {
         let env = ProcessInfo.processInfo.environment
         let path = (env["XDG_CONFIG_HOME"].map { $0 + "/halo/config" }) ?? (NSHomeDirectory() + "/.config/halo/config")
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
-        for line in text.split(whereSeparator: \.isNewline) {
+        for raw in text.split(whereSeparator: \.isNewline) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.hasPrefix("#") else { continue }   // skip comment lines
             let kv = line.split(separator: "=", maxSplits: 1)
             guard kv.count == 2, kv[0].trimmingCharacters(in: .whitespaces) == "halo-persist-scrollback" else { continue }
-            return kv[1].trimmingCharacters(in: .whitespaces) == "true"
+            // value before any inline comment, lowercased; accept true/1/yes
+            let v = kv[1].split(separator: "#")[0].trimmingCharacters(in: .whitespaces).lowercased()
+            return v == "true" || v == "1" || v == "yes"
         }
         return false
     }

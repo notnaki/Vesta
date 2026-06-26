@@ -30,7 +30,9 @@ By default Halo does **not** write terminal output to disk. If you set
 so history survives a daemon restart. Terminal output can contain passwords, API
 tokens, and SSH keys — enable this only if you accept on-disk persistence of that
 data. Logs are removed when a session ends cleanly; a daemon crash can leave the
-last ≤512 KB on disk until the next clean exit.
+last ~512 KB on disk until the next clean exit. The daemon reads this setting once
+at startup, so toggling it applies on the next daemon start (quit Halo and let
+`halod` exit, or `kill` it).
 
 ## Local IPC
 
