@@ -5,21 +5,23 @@ signs it with your **Developer ID**, **notarizes** it with Apple, staples the
 ticket, packages a DMG, and attaches it to a GitHub Release. Tag a commit
 `vX.Y.Z` (or run the workflow manually) to trigger it.
 
-You must add a few secrets/variables first — Apple won't let CI sign as you
-without them, and Vesta's two large build inputs are gitignored.
+You must add a few secrets first — Apple won't let CI sign as you without them.
+GhosttyKit is fetched automatically by SwiftPM; the only optional build input is
+the gitignored ghostty themes (see §1).
 
 ## 1. Build inputs (repo **Variables** — Settings ▸ Secrets and variables ▸ Actions ▸ Variables)
 
-These are gitignored in the repo (the 536 MB xcframework and the vendored
-ghostty themes), so CI downloads them:
+`GhosttyKit.xcframework` is fetched automatically by SwiftPM via a
+checksum-verified `binaryTarget` in `Package.swift` — **no variable needed**. The
+only optional CI input is the vendored ghostty themes (gitignored):
 
 | Variable | Value |
 |---|---|
-| `GHOSTTYKIT_URL` | URL to a **zip of `GhosttyKit.xcframework`**. Host it as an asset on a GitHub Release in this repo (or any reachable URL). |
-| `GHOSTTY_RESOURCES_URL` | *(optional)* URL to a tar.gz/zip of ghostty's `Resources/ghostty` dir (the 463 themes). If omitted, named themes won't bundle. |
+| `GHOSTTY_RESOURCES_URL` | *(optional)* URL to a tar.gz/zip of ghostty's `Resources/ghostty` dir (the bundled themes). If omitted, named themes won't bundle. |
 
-> Tip: `cd Frameworks && zip -r ghosttykit.zip GhosttyKit.xcframework`, then
-> `gh release create build-deps ghosttykit.zip` and point `GHOSTTYKIT_URL` at it.
+> To publish a new GhosttyKit build: rebuild the macOS-only xcframework, upload
+> the zip as a release asset (`gh release upload ghostkit-N GhosttyKit.xcframework.zip`),
+> then bump the `url` + `checksum` in `Package.swift`.
 
 ## 2. Developer ID certificate (repo **Secrets**)
 
@@ -34,7 +36,6 @@ base64 -i DeveloperID.p12 | pbcopy   # → DEVELOPER_ID_CERT_P12_BASE64
 |---|---|
 | `DEVELOPER_ID_CERT_P12_BASE64` | base64 of the `.p12` |
 | `DEVELOPER_ID_CERT_PASSWORD` | the password you set when exporting |
-| `APPLE_TEAM_ID` | your 10-character Team ID (Apple Developer ▸ Membership) |
 
 ## 3. Notarization key (App Store Connect API — repo **Secrets**)
 

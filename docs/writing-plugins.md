@@ -67,12 +67,12 @@ return { version = "1.0.0", priority = 0 }
 | `vesta.capture([scrollback])` | Focused pane's text as a string. |
 | `vesta.state()` | The full project/session tree as a table. |
 | `vesta.split([horizontal])` | Split the focused pane. |
-| `vesta.tab([action])` | `"new"` / `"next"` / `"prev"`. |
-| `vesta.select(project, session)` | Jump to a session by index. |
+| `vesta.tab([action])` | `"new"` / `"next"` / `"prev"` / `"close"`. |
+| `vesta.select(project, session)` | Jump to a session by index (0-based). |
 | `vesta.zoom()` | Toggle zoom on the focused pane. |
-| `vesta.open(path)` | Open a file. |
+| `vesta.open(path)` | Open a new session at a path. |
 | `vesta.browser([url])` | Open a browser pane. |
-| `vesta.focus([id])` | Focus a pane by id, or the active one. |
+| `vesta.focus([id])` | Focus a pane by id, or cycle to the next pane. |
 | `vesta.cmd(verb, ...args)` | Low-level: run any control verb, returns a table. |
 
 ### UI

@@ -15,11 +15,11 @@ and an agent-control CLI on top.
 
 ## Highlights
 
-- **Real libghostty** — Ghostty 1.3.2 Metal renderer, your ghostty config and
+- **Real libghostty** — Ghostty's Metal renderer, your ghostty config and
   theme, zero reimplemented terminal logic.
 - **Persistent sessions (tmux-style)** — shells survive Vesta quitting and
   reattach cleanly. A small daemon (`vestad`) holds the PTYs; panes connect
-  through a relay (`vesta-attach`). Prefix-key mode + a fuzzy session switcher.
+  through a relay (`vesta-attach`). Prefix-key mode for tmux muscle memory.
 - **Projects → sessions sidebar** — vertical, drag-resizable. Each project owns
   sessions; rename / recolor / remove from the right-click menu.
 - **Native splits** — `⌘D` / `⌘⇧D`, click-to-focus, zoom, drag dividers.
@@ -64,8 +64,8 @@ vesta zoom                       # toggle zoom on the focused pane
 vesta close                      # close the focused pane
 vesta send-keys <target> <text>  # type into a pane (target = pane id or "focused")
 vesta capture                    # dump the focused pane's screen
-vesta list                       # JSON: sessions + panes + focus
-vesta tab new|next|prev|<n>      # session control
+vesta list                       # the focused session's panes (+ tab index/count)
+vesta tab new|next|prev|close    # tab control
 vesta sessions                   # list daemon-held sessions (incl. detached)
 vesta kill <id>                  # end a session's shell (by paneID)
 ```
@@ -83,10 +83,10 @@ What you get:
 
 - **Survive quit** — `⌘Q`, reopen Vesta: panes come back with their shells and
   recent output.
-- **Detach, don't kill** — `⌘W` (pane) / `⌘⇧W` (session) detaches; the shell
-  keeps running under `vestad`. Reopen it from the switcher.
-- **Switcher** — `⌘K` (or prefix-`s`): fuzzy-filter every session across
-  windows/projects, including detached ones. Enter to jump.
+- **Close ends the shell** — `⌘W` closes the focused pane (a non-last pane
+  detaches; the last pane closes **and kills** its session). `⌘⇧W` closes and
+  kills the session. Shells survive only across window-close / `⌘Q` quit, and
+  reattach on relaunch. To keep a shell but drop the pane, prefix-`d` (detach).
 - **Prefix mode** — tmux muscle memory. Press the prefix (`ctrl+b` by default,
   `vesta-prefix`), then a key (table below). Empty `vesta-prefix` disables it.
 - **Explicit kill** — prefix-`x`, or `vesta kill <id>` — when you actually mean
@@ -99,8 +99,9 @@ What you get:
 #    in a pane:   echo i-was-here && date
 #    ⌘Q, reopen Vesta.app → the pane shows that output again.
 
-# 2. detach / reattach
-#    ⌘W the pane (shell keeps running), ⌘K → pick it → output replays.
+# 2. detached sessions survive
+#    close the window (not ⌘⇧W) → its shells keep running; relaunch → they reattach.
+#    or prefix-d a pane to detach it (shell lives on under vestad).
 
 # 3. from the CLI, watch the daemon hold sessions
 vesta sessions            # lists live + detached sessions with attach counts
@@ -118,10 +119,10 @@ daemon is single-instance per user.
 | `%` | split vertical | `c` | new session |
 | `"` | split horizontal | `n` / `p` | next / prev session |
 | `h j k l` / arrows | focus pane | `,` | rename session |
-| `z` | zoom pane | `s` | switcher |
-| `d` | detach pane | `x` | kill shell |
+| `z` | zoom pane | `d` | detach pane |
+| `x` | kill shell |  |  |
 
-Override bindings with `vesta-prefix-bind = key=action, …` in your ghostty config.
+Override bindings with `vesta-prefix-bind = key:action, …` in your ghostty config.
 
 ## Configuration
 
@@ -134,16 +135,16 @@ look, so an untouched config changes nothing.
 |-----|---------|---------|
 | `vesta-accent` | theme accent | accent color (rings, dots, focus ticks) |
 | `vesta-surface` | theme background | base surface color |
-| `vesta-sidebar-width` | 240 | sidebar open width (px) |
-| `vesta-font-family` | Geist Mono | chrome label font |
-| `vesta-font-mono` | Martian Mono | mono font |
+| `vesta-sidebar-width` | 224 | sidebar open width (px) |
+| `vesta-font-family` | GeistMono | chrome label font |
+| `vesta-font-mono` | MartianMono | mono font |
 | `vesta-font-size` | 13 | chrome font size |
 | `vesta-divider-width` | 8 | split divider grab width (1px hairline drawn) |
 | `vesta-projects` | — | comma-separated project paths to preload |
 | `vesta-persist` | true | run shells under `vestad` (survive quit); `false` = plain shells |
 | `vesta-persist-scrollback` | false | mirror scrollback to disk so it survives a daemon restart. **Off by default** — terminal output can contain secrets (see [SECURITY.md](SECURITY.md)) |
 | `vesta-prefix` | ctrl+b | prefix key for tmux-style mode; empty = disabled |
-| `vesta-prefix-bind` | — | override prefix bindings: `key=action, …` |
+| `vesta-prefix-bind` | — | override prefix bindings: `key:action, …` |
 
 ## Keybindings
 
@@ -151,17 +152,16 @@ look, so an untouched config changes nothing.
 |------|--------|
 | `⌘D` / `⌘⇧D` | split vertical / horizontal |
 | `⌘W` / `⌘⇧W` | close pane / close session |
-| `⌘T` | new session in active project (cwd `~`) |
+| `⌘T` | new session in active project (cwd = project dir) |
 | `⌘]` | focus next pane |
 | `⌘{` / `⌘}` | previous / next session |
 | `⌘1`–`⌘9` | select session N |
 | `⌘B` | toggle sidebar |
-| `⌘K` | session switcher (fuzzy, incl. detached) |
 | `ctrl+b` then a key | prefix mode (see Multiplexer & sessions) |
 
 Click a pane to focus it; click a project to expand it; right-click a project
-to rename / recolor / remove it. `⌘W` / `⌘⇧W` **detach** (the shell lives on
-under `vestad`) rather than killing — see Multiplexer & sessions.
+to rename / recolor / remove it. `⌘W` closes the focused pane; `⌘⇧W` closes
+**and kills** its session — see Multiplexer & sessions.
 
 ## Architecture
 
@@ -173,7 +173,7 @@ under `vestad`) rather than killing — see Multiplexer & sessions.
 - `Control.swift` — the `vesta` CLI + socket server.
 - `GhosttyConfig.swift` — `Theme` + `VestaConfig` (the `vesta-*` keys).
 - `Git.swift` — branch / status, shelled out off-main.
-- `PrefixMode.swift` / `Switcher.swift` — tmux-style prefix mode + fuzzy session switcher.
+- `PrefixMode.swift` — tmux-style prefix mode.
 - `Sources/vestad/` — the session daemon: one `forkpty`'d shell per pane + a raw
   output ring, replayed on attach. No terminal parsing (ghostty does that).
 - `Sources/vesta-attach/` — the per-pane relay ghostty spawns as its command;
@@ -184,9 +184,9 @@ under `vestad`) rather than killing — see Multiplexer & sessions.
 
 Designs live in `docs/superpowers/specs/`. Shipped: **persistent sessions**
 (`2026-06-25-mux-rawring-rewrite.md`) — `vestad`/`vesta-attach` raw-ring
-multiplexer, prefix mode, switcher. Deferred there: mirroring (one session in
-two panes), remote attach (`vesta attach ssh://`), disk-spill scrollback, and
-inline-image replay across detach. Also in flight: **cmux parity**
+multiplexer, prefix mode. Deferred there: mirroring (one session in two panes),
+remote attach (`vesta attach ssh://`), and inline-image replay across detach.
+(Disk-spill scrollback later shipped as `vesta-persist-scrollback`.) Also in flight: **cmux parity**
 (`2026-06-22-cmux-parity-design.md`) — worktree-isolated sessions, attention
 rings, richer sidebar, embedded browser pane.
 
