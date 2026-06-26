@@ -10,10 +10,10 @@ name: build & release
 #   AC_API_KEY_ID                  App Store Connect API key id (for notarytool)
 #   AC_API_ISSUER_ID               App Store Connect issuer id
 #   AC_API_KEY_P8_BASE64           base64 of the AuthKey_XXXX.p8
-# REQUIRED VARIABLES (Settings ▸ ... ▸ Variables) — the build inputs that are
-# gitignored in this repo (536 MB xcframework + vendored ghostty themes):
-#   GHOSTTYKIT_URL                 URL to a zip of GhosttyKit.xcframework
+# OPTIONAL VARIABLES (Settings ▸ ... ▸ Variables):
 #   GHOSTTY_RESOURCES_URL          URL to a tar/zip of ghostty's resources dir (themes/)
+# The GhosttyKit framework is fetched automatically by SwiftPM (see Package.swift),
+# so no GHOSTTYKIT_URL is needed.
 
 on:
   push:
@@ -32,22 +32,17 @@ jobs:
       - name: Select Xcode 26
         run: sudo xcode-select -s /Applications/Xcode_26.app || true
 
-      - name: Bootstrap gitignored build inputs (xcframework + ghostty resources)
+      # GhosttyKit is fetched by SwiftPM (Package.swift). Only optional ghostty
+      # resources (themes) need bootstrapping, when GHOSTTY_RESOURCES_URL is set.
+      - name: Optional ghostty resources (themes)
+        if: ${{ vars.GHOSTTY_RESOURCES_URL != '' }}
         env:
-          GHOSTTYKIT_URL: ${{ vars.GHOSTTYKIT_URL }}
           GHOSTTY_RESOURCES_URL: ${{ vars.GHOSTTY_RESOURCES_URL }}
         run: |
           set -euo pipefail
-          [ -n "$GHOSTTYKIT_URL" ] || { echo "::error::set the GHOSTTYKIT_URL repo variable (zip of GhosttyKit.xcframework)"; exit 1; }
-          mkdir -p Frameworks
-          curl -fsSL "$GHOSTTYKIT_URL" -o /tmp/ghosttykit.zip
-          unzip -q -o /tmp/ghosttykit.zip -d Frameworks
-          if [ -n "$GHOSTTY_RESOURCES_URL" ]; then
-            mkdir -p Resources
-            curl -fsSL "$GHOSTTY_RESOURCES_URL" -o /tmp/gres.tgz
-            tar -xzf /tmp/gres.tgz -C Resources || unzip -q -o /tmp/gres.tgz -d Resources
-          fi
-          ls Frameworks
+          mkdir -p Resources
+          curl -fsSL "$GHOSTTY_RESOURCES_URL" -o /tmp/gres.tgz
+          tar -xzf /tmp/gres.tgz -C Resources || unzip -q -o /tmp/gres.tgz -d Resources
 
       - name: Import Developer ID certificate
         env:

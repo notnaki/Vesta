@@ -1,7 +1,8 @@
 name: ci
 
-# Build + selfcheck on every push / PR. Needs the gitignored build inputs, so it
-# only runs when the GHOSTTYKIT_URL repo variable is set (see docs/SIGNING.md).
+# Build + selfcheck on every push / PR. The GhosttyKit framework is fetched
+# automatically by SwiftPM (URL + checksum binaryTarget in Package.swift), so no
+# secrets or bootstrap are required to build.
 
 on:
   push:
@@ -12,21 +13,16 @@ on:
 jobs:
   build:
     runs-on: macos-14
-    if: ${{ vars.GHOSTTYKIT_URL != '' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Bootstrap build inputs
+      - name: Optional ghostty resources (themes)
+        if: ${{ vars.GHOSTTY_RESOURCES_URL != '' }}
         env:
-          GHOSTTYKIT_URL: ${{ vars.GHOSTTYKIT_URL }}
           GHOSTTY_RESOURCES_URL: ${{ vars.GHOSTTY_RESOURCES_URL }}
         run: |
           set -euo pipefail
-          mkdir -p Frameworks
-          curl -fsSL "$GHOSTTYKIT_URL" -o /tmp/k.zip && unzip -q -o /tmp/k.zip -d Frameworks
-          if [ -n "$GHOSTTY_RESOURCES_URL" ]; then
-            mkdir -p Resources && curl -fsSL "$GHOSTTY_RESOURCES_URL" -o /tmp/r.tgz
-            tar -xzf /tmp/r.tgz -C Resources || unzip -q -o /tmp/r.tgz -d Resources
-          fi
+          mkdir -p Resources && curl -fsSL "$GHOSTTY_RESOURCES_URL" -o /tmp/r.tgz
+          tar -xzf /tmp/r.tgz -C Resources || unzip -q -o /tmp/r.tgz -d Resources
       - name: Build
         run: swift build -c debug
       - name: Selfcheck

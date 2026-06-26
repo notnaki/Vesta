@@ -31,11 +31,14 @@ and an agent-control CLI on top.
 
 ## Build & run
 
+No setup needed — `swift build` fetches the prebuilt GhosttyKit framework
+(libghostty) automatically via a checksum-verified release asset.
+
 ```sh
-swift build
+swift build                                       # auto-fetches GhosttyKit on first build
 .build/arm64-apple-macosx/debug/halo            # run the app (dev)
 swift run halo selfcheck                          # pure-logic checks
-./install.sh                                      # symlink `halo` → /usr/local/bin (CLI)
+./install.sh                                      # copy halo + halod + halo-attach → /usr/local/bin (CLI)
 
 ./make-app.sh                                     # build Halo.app (double-clickable, logo icon)
 open Halo.app                                     # launch the bundle
