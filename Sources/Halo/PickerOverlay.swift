@@ -3,6 +3,17 @@ import AppKit
 /// One row of a picker: a label plus an optional dimmed description (command-palette style).
 struct PickItem { let label: String; let desc: String? }
 
+/// Per-call sizing for a picker (from halo.pick/menu/pickmulti opts). All optional:
+/// `width` overrides the default; `fixedHeight` forces the list area to that height (the
+/// old always-tall look); otherwise the list hugs its rows up to `maxHeight`, then scrolls.
+struct PickOpts {
+    var width: CGFloat? = nil       // nil → hug the widest row (clamped); set → fixed width
+    var fixedHeight: CGFloat? = nil
+    var maxHeight: CGFloat = 440
+}
+
+private final class FlippedClipView: NSClipView { override var isFlipped: Bool { true } }
+
 /// A generic picker overlay (the UI behind `halo.pick`, `halo.menu`, `halo.pickmulti`,
 /// `halo.prompt`, `halo.confirm`). A dim scrim over the window with a search field + filtered
 /// list; type to filter (case-insensitive substring on the label), ↑/↓ to move, Enter to
@@ -20,15 +31,18 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
     private let onCancel: () -> Void
     private let input = NSTextField()
     private let listStack = NSStackView()
+    private let opts: PickOpts
 
     /// Designated init: index-based selection over `items`.
     private init(theme: Theme, items: [PickItem], multiSelect: Bool, isPrompt: Bool,
+                 opts: PickOpts = PickOpts(),
                  onIndices: @escaping ([Int]) -> Void, onText: @escaping (String) -> Void,
                  onCancel: @escaping () -> Void) {
         self.theme = theme
         self.items = items
         self.multiSelect = multiSelect
         self.isPrompt = isPrompt
+        self.opts = opts
         self.onIndices = onIndices
         self.onText = onText
         self.onCancel = onCancel
@@ -50,26 +64,20 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
 
     /// Single-select rich picker returning the chosen index (`halo.pick` with descriptions,
     /// `halo.menu`). Multi-select variant returns every marked index.
-    convenience init(theme: Theme, richItems: [PickItem], multiSelect: Bool,
+    convenience init(theme: Theme, richItems: [PickItem], multiSelect: Bool, opts: PickOpts = PickOpts(),
                      onPick: @escaping ([Int]) -> Void, onCancel: @escaping () -> Void) {
-        self.init(theme: theme, items: richItems, multiSelect: multiSelect, isPrompt: false,
+        self.init(theme: theme, items: richItems, multiSelect: multiSelect, isPrompt: false, opts: opts,
                   onIndices: onPick, onText: { _ in }, onCancel: onCancel)
     }
 
     /// Free-text prompt (`halo.prompt`): a field with no list; Enter submits the typed text.
+    /// Fixed-width (no list to hug, and free text wants room).
     convenience init(theme: Theme, prompt: String, initial: String = "",
                      onSubmit: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        self.init(theme: theme, items: [], multiSelect: false, isPrompt: true,
+        self.init(theme: theme, items: [], multiSelect: false, isPrompt: true, opts: PickOpts(width: 520),
                   onIndices: { _ in }, onText: onSubmit, onCancel: onCancel)
         input.placeholderString = prompt
         input.stringValue = initial
-    }
-
-    /// Yes/No confirm (`halo.confirm`): a two-item pick with the message as the field label.
-    convenience init(theme: Theme, confirm message: String,
-                     onChoose: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        self.init(theme: theme, items: ["Yes", "No"], onChoose: onChoose, onCancel: onCancel)
-        input.placeholderString = message
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -106,17 +114,22 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
 
         let scroll = NSScrollView()
         scroll.drawsBackground = false
-        scroll.hasVerticalScroller = false
+        scroll.hasVerticalScroller = true          // overflow is scrollable + discoverable
+        scroll.scrollerStyle = .overlay            // floats over content, reserves no width
+        scroll.autohidesScrollers = true           // hidden until the list actually overflows
         scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.contentView = FlippedClipView()     // top-anchor the list so it hugs from the top
         scroll.documentView = listStack
 
         panel.addSubview(input)
         panel.addSubview(scroll)
-        NSLayoutConstraint.activate([
+        // Sizing: width from opts. Height — if opts.fixedHeight is set, the list area is
+        // exactly that (the old always-tall look); otherwise it hugs its rows up to
+        // opts.maxHeight, then scrolls. Always capped to the window so it never overflows.
+        var cons: [NSLayoutConstraint] = [
             panel.topAnchor.constraint(equalTo: topAnchor, constant: 90),
             panel.centerXAnchor.constraint(equalTo: centerXAnchor),
-            panel.widthAnchor.constraint(equalToConstant: 520),
-            panel.heightAnchor.constraint(lessThanOrEqualToConstant: 380),
+            panel.widthAnchor.constraint(equalToConstant: opts.width ?? contentWidth()),
             input.topAnchor.constraint(equalTo: panel.topAnchor, constant: 14),
             input.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 16),
             input.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -16),
@@ -124,9 +137,19 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
             scroll.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 8),
             scroll.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -8),
             scroll.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -10),
-            scroll.heightAnchor.constraint(lessThanOrEqualToConstant: 320),
+            scroll.heightAnchor.constraint(lessThanOrEqualTo: heightAnchor, multiplier: 0.8),
             listStack.widthAnchor.constraint(equalTo: scroll.widthAnchor),
-        ])
+        ]
+        if let h = opts.fixedHeight {
+            let fixed = scroll.heightAnchor.constraint(equalToConstant: h)
+            fixed.priority = .defaultHigh   // yields to the window cap above
+            cons.append(fixed)
+        } else {
+            let hug = scroll.heightAnchor.constraint(equalTo: listStack.heightAnchor)
+            hug.priority = .defaultHigh     // hug content; the caps below win when exceeded
+            cons += [hug, scroll.heightAnchor.constraint(lessThanOrEqualToConstant: opts.maxHeight)]
+        }
+        NSLayoutConstraint.activate(cons)
     }
 
     private func apply(query: String) {
@@ -136,18 +159,31 @@ final class PickerOverlay: NSView, NSTextFieldDelegate {
         rebuildRows()
     }
 
+    private static let rowFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+
     private func rowText(_ itemIndex: Int) -> NSAttributedString {
         let it = items[itemIndex]
+        let f = PickerOverlay.rowFont
         let s = NSMutableAttributedString()
         if multiSelect {
             s.append(NSAttributedString(string: marked.contains(itemIndex) ? "✓ " : "  ",
-                                        attributes: [.foregroundColor: theme.accent]))
+                                        attributes: [.foregroundColor: theme.accent, .font: f]))
         }
-        s.append(NSAttributedString(string: it.label, attributes: [.foregroundColor: NSColor(white: 0.92, alpha: 1)]))
+        s.append(NSAttributedString(string: it.label, attributes: [.foregroundColor: NSColor(white: 0.92, alpha: 1), .font: f]))
         if let d = it.desc, !d.isEmpty {
-            s.append(NSAttributedString(string: "  \(d)", attributes: [.foregroundColor: NSColor(white: 0.5, alpha: 1)]))
+            s.append(NSAttributedString(string: "  \(d)", attributes: [.foregroundColor: NSColor(white: 0.5, alpha: 1), .font: f]))
         }
         return s
+    }
+
+    /// Default width: the widest row (or the filter placeholder) plus padding, clamped to a
+    /// sane range so a tiny list isn't cramped and a long label doesn't run off-screen.
+    private func contentWidth() -> CGFloat {
+        var w: CGFloat = 0
+        for i in items.indices { w = max(w, rowText(i).size().width) }
+        let ph = (input.placeholderString ?? "") as NSString
+        w = max(w, ph.size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)]).width)
+        return min(680, max(300, ceil(w) + 56))   // + row/scroll/panel horizontal padding
     }
 
     private func rebuildRows() {

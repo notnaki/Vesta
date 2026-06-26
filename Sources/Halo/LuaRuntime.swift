@@ -21,9 +21,9 @@ nonisolated(unsafe) var luaPluginSpecs: [PluginSpec] = []             // declare
 nonisolated(unsafe) var luaControl: (String, [String]) -> [String: Any] = { _, _ in [:] }  // halo.cmd → control dispatch
 nonisolated(unsafe) var luaScheduleTimer: (Double, Int32) -> Void = { _, _ in }            // halo.timer
 nonisolated(unsafe) var luaClearTimers: () -> Void = {}                                     // reset on reload
-nonisolated(unsafe) var luaShowPick: ([PickItem], Int32) -> Void = { _, _ in }             // halo.pick (rich)
-nonisolated(unsafe) var luaShowPickMulti: ([PickItem], Int32) -> Void = { _, _ in }        // halo.pickmulti
-nonisolated(unsafe) var luaShowMenu: ([PickItem], [Int32]) -> Void = { _, _ in }           // halo.menu
+nonisolated(unsafe) var luaShowPick: ([PickItem], Int32, PickOpts) -> Void = { _, _, _ in }       // halo.pick (rich)
+nonisolated(unsafe) var luaShowPickMulti: ([PickItem], Int32, PickOpts) -> Void = { _, _, _ in }  // halo.pickmulti
+nonisolated(unsafe) var luaShowMenu: ([PickItem], [Int32], PickOpts) -> Void = { _, _, _ in }     // halo.menu
 nonisolated(unsafe) var luaSetStatus: (String) -> Void = { _ in }                          // halo.status
 nonisolated(unsafe) var luaPanel: ([PanelLine], PanelOpts) -> Int = { _, _ in 0 }           // halo.panel → id
 nonisolated(unsafe) var luaClosePanel: (Int) -> Void = { _ in }                            // halo.close
@@ -254,24 +254,40 @@ private func pickItems(_ L: OpaquePointer?, _ idx: Int32) -> [PickItem] {
     return out
 }
 
-/// halo.pick(items, fn): items are strings or {label, desc}. fn gets the chosen label.
-/// fn ref is one-shot (freed after choose/cancel via luaUnref).
+/// Read optional picker sizing opts {width, height, maxrows, maxheight} at stack `idx`.
+private func pickOpts(_ L: OpaquePointer?, _ idx: Int32) -> PickOpts {
+    var o = PickOpts()
+    guard lua_type(L, idx) == halo_lua_ttable() else { return o }
+    func num(_ k: String) -> CGFloat? {
+        lua_getfield(L, idx, k); defer { lua_settop(L, -2) }
+        var isnum: Int32 = 0; let v = lua_tonumberx(L, -1, &isnum)
+        return isnum != 0 ? CGFloat(v) : nil
+    }
+    if let w = num("width") { o.width = w }
+    if let h = num("height") { o.fixedHeight = h }                 // force the always-tall look
+    if let mh = num("maxheight") { o.maxHeight = mh }
+    if let r = num("maxrows") { o.maxHeight = r * 26 }             // ~26pt per row; scroll past this
+    return o
+}
+
+/// halo.pick(items, fn [, opts]): items are strings or {label, desc}. fn gets the chosen label.
+/// opts = {width, height, maxrows}. fn ref is one-shot (freed after choose/cancel via luaUnref).
 private func l_halo_pick(_ L: OpaquePointer?) -> Int32 {
     let items = pickItems(L, 1)
     luaL_checktype(L, 2, halo_lua_tfunction())
     lua_pushvalue(L, 2)
     let ref = luaL_ref(L, halo_lua_registryindex())
-    luaShowPick(items, ref)
+    luaShowPick(items, ref, pickOpts(L, 3))
     return 0
 }
 
-/// halo.pickmulti(items, fn): multi-select (Tab to mark). fn gets a table of chosen labels.
+/// halo.pickmulti(items, fn [, opts]): multi-select (Tab to mark). fn gets a table of labels.
 private func l_halo_pickmulti(_ L: OpaquePointer?) -> Int32 {
     let items = pickItems(L, 1)
     luaL_checktype(L, 2, halo_lua_tfunction())
     lua_pushvalue(L, 2)
     let ref = luaL_ref(L, halo_lua_registryindex())
-    luaShowPickMulti(items, ref)
+    luaShowPickMulti(items, ref, pickOpts(L, 3))
     return 0
 }
 
@@ -296,7 +312,7 @@ private func l_halo_menu(_ L: OpaquePointer?) -> Int32 {
             lua_settop(L, -2)                               // pop element
         }
     }
-    luaShowMenu(items, refs)
+    luaShowMenu(items, refs, pickOpts(L, 2))
     return 0
 }
 

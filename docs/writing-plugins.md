@@ -89,6 +89,13 @@ return { version = "1.0.0", priority = 0 }
 | `halo.panel(lines, opts)` | Create/update a floating panel → returns its `id`. |
 | `halo.close(id)` | Close a panel. |
 
+**Picker sizing.** `pick`/`pickmulti`/`menu` take an optional final `opts` table. By
+default the panel hugs its content (width to the widest row, height to the row count) and
+scrolls past a generous max. Override per call: `{ width = 600 }` (fixed width),
+`{ height = 460 }` (force a tall panel — the old always-large look), `{ maxrows = 8 }` or
+`{ maxheight = 300 }` (start scrolling earlier). e.g.
+`halo.pick(items, fn, { maxrows = 6 })`.
+
 **Panels.** `lines` is an array; each line is one of:
 - a string, or `{ text = , color = "#rrggbb" }` — a label,
 - `{ text = , color = , click = fn }` — a clickable button,

@@ -126,28 +126,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// halo.pick: single-select (rich rows); call the ref with the chosen label.
-    func showPick(_ items: [PickItem], _ ref: Int32) {
+    func showPick(_ items: [PickItem], _ ref: Int32, _ opts: PickOpts) {
         presentPicker({ _, dismiss in
-            PickerOverlay(theme: theme, richItems: items, multiSelect: false,
+            PickerOverlay(theme: theme, richItems: items, multiSelect: false, opts: opts,
                 onPick: { idx in dismiss(); if let i = idx.first { luaCall(ref: ref, stringArg: items[i].label) }; luaUnref(ref) },
                 onCancel: { dismiss(); luaUnref(ref) })
         }, freeing: [ref])
     }
 
     /// halo.pickmulti: multi-select; call the ref with a table of chosen labels.
-    func showPickMulti(_ items: [PickItem], _ ref: Int32) {
+    func showPickMulti(_ items: [PickItem], _ ref: Int32, _ opts: PickOpts) {
         presentPicker({ _, dismiss in
-            PickerOverlay(theme: theme, richItems: items, multiSelect: true,
+            PickerOverlay(theme: theme, richItems: items, multiSelect: true, opts: opts,
                 onPick: { idx in dismiss(); luaCallStringList(ref: ref, idx.map { items[$0].label }); luaUnref(ref) },
                 onCancel: { dismiss(); luaUnref(ref) })
         }, freeing: [ref])
     }
 
     /// halo.menu: single-select where each item carries its own action ref (-1 = none).
-    func showMenu(_ items: [PickItem], _ refs: [Int32]) {
+    func showMenu(_ items: [PickItem], _ refs: [Int32], _ opts: PickOpts) {
         let free = { refs.forEach { if $0 >= 0 { luaUnref($0) } } }
         presentPicker({ _, dismiss in
-            PickerOverlay(theme: theme, richItems: items, multiSelect: false,
+            PickerOverlay(theme: theme, richItems: items, multiSelect: false, opts: opts,
                 onPick: { idx in dismiss(); if let i = idx.first, refs.indices.contains(i), refs[i] >= 0 { luaCall(ref: refs[i]) }; free() },
                 onCancel: { dismiss(); free() })
         }, freeing: refs.filter { $0 >= 0 })
@@ -213,14 +213,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         host.addSubview(overlay)
     }
 
-    /// halo.confirm: yes/no overlay; call the Lua ref with a boolean (Esc/click-scrim → false).
+    /// halo.confirm: compact yes/no dialog; call the Lua ref with a boolean (Esc/scrim → false).
     func showConfirm(_ message: String, _ ref: Int32) {
         guard let host = active?.controller.window?.contentView,
-              !host.subviews.contains(where: { $0 is PickerOverlay }) else { luaUnref(ref); return }
-        let dismiss = { [weak host] in host?.subviews.compactMap { $0 as? PickerOverlay }.forEach { $0.removeFromSuperview() } }
-        let overlay = PickerOverlay(theme: theme, confirm: message,
-            onChoose: { item in dismiss(); luaCallBool(ref: ref, item == "Yes"); luaUnref(ref) },
-            onCancel: { dismiss(); luaCallBool(ref: ref, false); luaUnref(ref) })
+              !host.subviews.contains(where: { $0 is PickerOverlay || $0 is ConfirmOverlay }) else { luaUnref(ref); return }
+        let dismiss: () -> Void = { [weak host] in host?.subviews.compactMap { $0 as? ConfirmOverlay }.forEach { $0.removeFromSuperview() } }
+        let overlay = ConfirmOverlay(theme: theme, message: message) { yes in
+            dismiss(); luaCallBool(ref: ref, yes); luaUnref(ref)
+        }
         overlay.frame = host.bounds
         overlay.autoresizingMask = [.width, .height]
         host.addSubview(overlay)
@@ -364,9 +364,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.luaTimers.append(t)
         }
         luaClearTimers = { [weak self] in self?.luaTimers.forEach { $0.invalidate() }; self?.luaTimers.removeAll() }
-        luaShowPick = { [weak self] items, ref in self?.showPick(items, ref) }
-        luaShowPickMulti = { [weak self] items, ref in self?.showPickMulti(items, ref) }
-        luaShowMenu = { [weak self] items, refs in self?.showMenu(items, refs) }
+        luaShowPick = { [weak self] items, ref, opts in self?.showPick(items, ref, opts) }
+        luaShowPickMulti = { [weak self] items, ref, opts in self?.showPickMulti(items, ref, opts) }
+        luaShowMenu = { [weak self] items, refs, opts in self?.showMenu(items, refs, opts) }
         luaSetStatus = { [weak self] s in self?.windows.forEach { $0.controller.setLuaStatus(s) } }
         luaPanel = { [weak self] lines, opts in self?.luaPanelSet(lines, opts) ?? 0 }
         luaClosePanel = { [weak self] id in
