@@ -598,6 +598,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         Fonts.register()  // bundle Geist/Martian Mono before building UI
         loadNotes()       // restore persisted notification history (bell list)
+        // Re-stamp the user's chosen app-icon variant (App Icon menu / About panel) onto
+        // the bundle. Persists across quit on its own; re-applying here also restores it
+        // after an in-place self-update, which ships a fresh bundle with the default icon.
+        let savedIcon = UserDefaults.standard.integer(forKey: AboutWindowController.iconKey)
+        if savedIcon > 0 { AboutWindowController.applyIcon(savedIcon) }
         let ghostty = GhosttyApp.shared  // inits libghostty (init/config/app) — native config sync
         theme = ghostty.theme  // colors from the real ghostty config
 
