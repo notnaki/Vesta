@@ -6,8 +6,10 @@
     {
       "layers" : [
         {
-          "blend-mode" : "lighten",
+          "blend-mode" : "screen",
           "fill" : "none",
+          "glass" : true,
+          "hidden" : false,
           "image-name" : "vesta-logo.svg",
           "name" : "vesta-logo",
           "position" : {
