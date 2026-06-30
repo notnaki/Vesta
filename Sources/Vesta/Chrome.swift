@@ -328,6 +328,10 @@ final class VestaWindowController: NSWindowController {
         sidebarWidth.constant = clamped
         openWidth = clamped
         UserDefaults.standard.set(Double(clamped), forKey: "VestaSidebarWidth")
+        // Any visible width means the sidebar is open — keep the toggle state (and the
+        // persisted bit) in sync so ⌘B isn't a dead press after resizing while collapsed.
+        sidebarOpen = true
+        UserDefaults.standard.set(true, forKey: "VestaSidebarOpen")
         sidebar.superview?.layoutSubtreeIfNeeded()
         updateToggleTint()
     }
