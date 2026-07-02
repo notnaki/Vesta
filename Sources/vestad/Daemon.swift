@@ -46,11 +46,7 @@ final class Daemon {
         let path = MuxPaths.daemonSocket
         unlink(path)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        var addr = sockaddr_un(); addr.sun_family = sa_family_t(AF_UNIX)
-        let bytes = Array(path.utf8)
-        withUnsafeMutableBytes(of: &addr.sun_path) { raw in
-            for i in 0..<min(bytes.count, raw.count - 1) { raw[i] = bytes[i] }
-        }
+        var addr = makeSockaddrUn(path)
         let len = socklen_t(MemoryLayout<sockaddr_un>.size)
         let bound = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, len) }
@@ -267,6 +263,7 @@ final class Daemon {
                         var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
                         let pr = poll(&pfd, 1, 5000)   // wait up to 5s for writable
                         if pr > 0 { continue }          // drained → retry write
+                        if pr < 0 && errno == EINTR { continue }   // signal → retry
                         return false                    // timeout or poll error → drop
                     }
                 }
