@@ -15,12 +15,16 @@ enum Ports {
     }
 
     /// Listen ports opened by `pid` and its descendants.
-    // ponytail: misses re-parented procs. Upgrade path: proc_pidinfo or libproc.
+    // ponytail: one pgrep per tree DEPTH (comma-joined frontier), not per pid — the old loop
+    // spawned a pgrep for every descendant. Still misses re-parented procs; the real ceiling
+    // is proc_pidinfo/libproc, not worth it yet.
     static func forShell(pid: pid_t) -> [Int] {
         var pids = [pid]; var frontier = [pid]
-        while let p = frontier.popLast() {
-            let kids = shell("/usr/bin/pgrep", ["-P", "\(p)"]).split(separator: "\n").compactMap { pid_t($0) }
-            pids += kids; frontier += kids
+        while !frontier.isEmpty {
+            // pgrep -P takes a comma-separated PPID list → all children of this level in one spawn.
+            let kids = shell("/usr/bin/pgrep", ["-P", frontier.map(String.init).joined(separator: ",")])
+                .split(separator: "\n").compactMap { pid_t($0) }
+            pids += kids; frontier = kids
         }
         let out = shell("/usr/sbin/lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p", pids.map(String.init).joined(separator: ",")])
         return parse(out)

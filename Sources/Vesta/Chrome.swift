@@ -669,13 +669,18 @@ final class VestaWindowController: NSWindowController {
     }
 
     /// 12×12 filled rounded swatch for the color submenu.
+    // ponytail: cache the rasterized swatch per color — every sidebar rebuild remade one
+    // NSImage (lockFocus) per preset × project. Colors are a fixed handful; no eviction.
+    private static var swatchCache: [NSColor: NSImage] = [:]
     private static func swatch(_ color: NSColor) -> NSImage {
+        if let img = swatchCache[color] { return img }
         let size = NSSize(width: 12, height: 12)
         let img = NSImage(size: size)
         img.lockFocus()
         NSBezierPath(roundedRect: NSRect(origin: .zero, size: size), xRadius: 3, yRadius: 3).addClip()
         color.setFill(); NSRect(origin: .zero, size: size).fill()
         img.unlockFocus()
+        swatchCache[color] = img
         return img
     }
 

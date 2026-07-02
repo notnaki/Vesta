@@ -5,9 +5,13 @@ import Foundation
 /// the on-focus refresh proves too stale.
 enum Git {
     /// "⎇ main ↑1 · 3 dirty" for a repo, or nil if `cwd` isn't one.
-    static func status(_ cwd: String) -> String? {
+    static func status(_ cwd: String) -> String? { statusAndDirty(cwd).text }
+
+    /// Formatted status line AND the dirty count from one `status --porcelain` spawn, so the
+    /// caller doesn't respawn it via dirtyCount. Returns (nil, 0) if `cwd` isn't a repo.
+    static func statusAndDirty(_ cwd: String) -> (text: String?, dirty: Int) {
         guard let branch = run(["rev-parse", "--abbrev-ref", "HEAD"], cwd), !branch.isEmpty
-        else { return nil }
+        else { return (nil, 0) }
 
         var parts = ["⎇ \(branch)"]
         if let ab = run(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"], cwd) {
@@ -17,10 +21,9 @@ enum Git {
                 if n[0] > 0 { parts[0] += " ↓\(n[0])" }
             }
         }
-        let dirty = run(["status", "--porcelain"], cwd)?
-            .split(separator: "\n").count ?? 0
+        let dirty = parsePorcelain(run(["status", "--porcelain"], cwd) ?? "")
         if dirty > 0 { parts.append("\(dirty) dirty") }
-        return parts.joined(separator: " · ")
+        return (parts.joined(separator: " · "), dirty)
     }
 
     /// Current branch name via `rev-parse --abbrev-ref HEAD`, or nil if not a repo / detached / empty.
