@@ -279,6 +279,10 @@ final class PaneTree {
     /// dedup: a daemon session already shown by a pane isn't "detached").
     var paneIDs: [String] { leaves.compactMap { ($0.content as? TerminalPane)?.paneID } }
 
+    /// Every live TerminalPane in this tree (browser leaves excluded) — used by
+    /// broadcast send-keys and `pane status` to fan out / look up by paneID.
+    var panes: [TerminalPane] { leaves.compactMap { $0.content as? TerminalPane } }
+
     /// Explicit kill (prefix-x / menu): terminate the shell under vestad, then close
     /// the pane locally. Distinct from Cmd-W, which only detaches.
     func killFocusedSession() {
