@@ -238,6 +238,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }, freeing: refs.filter { $0 >= 0 })
     }
 
+    /// ⌘⇧P command palette: a searchable overlay of every runnable action — built-in app
+    /// commands (with their shortcuts) plus every Lua-registered `vesta.command`. Reuses the
+    /// vesta.pick overlay (PickerOverlay); selecting a row runs its action. Filtering is the
+    /// overlay's built-in case-insensitive substring match — no fuzzy matching. // ponytail: substring is fine.
+    func showCommandPalette() {
+        // (label, shortcut-for-desc-column, action). Built-ins mirror installKeybinds/
+        // dispatchPrefix. Actions take the key window at PICK time — nothing window-scoped
+        // is captured, so a window closed with the palette up isn't retained by the overlay.
+        var entries: [(String, String, (WindowContext) -> Void)] = [
+            ("Split Vertical", "⌘D", { let ws = $0.workspace; ws.activeTree.splitFocused(.vertical, cwd: ws.activeTree.focusedCwd) }),
+            ("Split Horizontal", "⌘⇧D", { let ws = $0.workspace; ws.activeTree.splitFocused(.horizontal, cwd: ws.activeTree.focusedCwd) }),
+            ("Zoom Pane", "", { $0.workspace.activeTree.zoomFocused() }),
+            ("Close Pane", "⌘W", { $0.workspace.activeTree.closeFocused() }),
+            ("Close Session", "⌘⇧W", { let ws = $0.workspace; ws.closeSession(ws.activeP, ws.activeS) }),
+            ("New Session", "⌘T", { let ws = $0.workspace; ws.newSession(ws.activeP) }),
+            ("New Window", "⌘N", { [weak self] _ in self?.newWindow() }),
+            ("Toggle Sidebar", "⌘B", { $0.controller.toggleSidebar() }),
+            ("Focus Next Pane", "⌘]", { $0.workspace.activeTree.focusNext() }),
+            ("Focus Previous Pane", "⌘[", { $0.workspace.activeTree.focusPrev() }),
+            ("Next Session", "⌘}", { $0.workspace.nextSession() }),
+            ("Previous Session", "⌘{", { $0.workspace.prevSession() }),
+            ("Find in Terminal", "⌘F", { $0.workspace.activeTree.focused?.startSearch() }),
+            ("Rename Session", "", { [weak self] _ in self?.promptRenameActiveSession() }),
+            ("Kill Session", "", { $0.workspace.activeTree.killFocusedSession() }),
+            ("Open Browser Pane", "⌘⇧↵", { ctx in
+                let tree = ctx.workspace.activeTree
+                let url = ctx.detectedPort(tree).map { URL(string: "http://localhost:\($0)")! }
+                    ?? URL(string: "about:blank")!
+                tree.openBrowser(url: url)
+            }),
+            ("Notifications", "", { [weak self] _ in self?.showNotifications() }),
+            ("Enter Full Screen", "⌃⌘F", { $0.controller.window?.toggleFullScreen(nil) }),
+            ("Settings…", "⌘,", { [weak self] _ in self?.openSettings() }),
+            ("Reload Config", "", { [weak self] _ in self?.reloadConfig() }),
+            ("Check for Updates…", "", { [weak self] _ in self?.checkForUpdates() }),
+            ("About Vesta", "", { [weak self] _ in self?.showAbout() }),
+        ]
+        // Lua plugin commands (vesta.command) appear alongside the built-ins. The closure
+        // captures the NAME and re-resolves at pick time, so a reload can't leave stale refs.
+        for name in luaCommands.keys.sorted() {
+            entries.append((name, "plugin", { _ in luaRunCommand(name) }))
+        }
+        let items = entries.map { PickItem(label: $0.0, desc: $0.1.isEmpty ? nil : $0.1) }
+        let actions = entries.map { $0.2 }
+        presentPicker(
+            { _, dismiss in
+                PickerOverlay(
+                    theme: self.theme, richItems: items, multiSelect: false, opts: PickOpts(),
+                    onPick: { [weak self] idx in
+                        dismiss()
+                        guard let ctx = self?.active else { return }
+                        if let i = idx.first, actions.indices.contains(i) { actions[i](ctx) }
+                    },
+                    onCancel: { dismiss() })
+            }, freeing: [])
+    }
+
     /// vesta.panel: create (id 0) or update (existing id) a plugin panel. `window = "all"`
     /// renders it in every window; otherwise it lives in the active window and follows focus.
     /// Returns the panel id. Corner/scope are fixed at creation.
@@ -1140,6 +1197,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // ⌘B: toggle sidebar
             case "b":
                 ctx.controller.toggleSidebar()
+                return nil
+            // ⌘⇧P: command palette (searchable list of every built-in + Lua command)
+            case "p" where shift:
+                self.showCommandPalette()
                 return nil
             // ⌘]/⌘[: focus next/prev pane within the active session
             case "]":

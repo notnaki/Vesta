@@ -34,6 +34,8 @@ and an agent-control CLI on top.
 - **Projects → sessions sidebar** — vertical, drag-resizable. Each project owns
   sessions; rename / recolor / remove from the right-click menu.
 - **Native splits** — `⌘D` / `⌘⇧D`, click-to-focus, zoom, drag dividers.
+- **Command palette** — `⌘⇧P` opens a searchable list of every action (splits,
+  sessions, browser pane, settings…) plus your plugins' `vesta.command` entries.
 - **Scriptable** — the `vesta` CLI drives and reads the live UI over a Unix
   socket, so agents can orchestrate it.
 - **Notifications** — `vesta.notify` from a plugin shows a stacking in-app toast,
@@ -178,6 +180,7 @@ look, so an untouched config changes nothing.
 | `⌘{` / `⌘}` | previous / next session |
 | `⌘1`–`⌘9` | select session N |
 | `⌘B` | toggle sidebar |
+| `⌘⇧P` | command palette (search + run any action or plugin command) |
 | `ctrl+b` then a key | prefix mode (see Multiplexer & sessions) |
 
 Click a pane to focus it; click a project to expand it; right-click a project
