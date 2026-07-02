@@ -8,7 +8,7 @@ func controlSocketPath() -> String {
     return base + "/control.sock"
 }
 
-let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser", "reload", "search", "kill", "new-window", "state", "sessions", "select", "rename", "project", "notify", "run", "plugins"]
+let controlVerbs: Set<String> = ["split", "new-pane", "close", "focus", "zoom", "send-keys", "capture", "list", "open", "tab", "worktree", "browser", "reload", "search", "kill", "new-window", "state", "sessions", "select", "rename", "project", "notify", "run", "plugins", "pane"]
 
 // MARK: - Socket helpers
 
@@ -117,6 +117,25 @@ final class ControlServer: @unchecked Sendable {
         return tree.focused
     }
 
+    /// `sessions --json`: one flat record per session (id, name, project, cwd, pane count,
+    /// active/attention flags) sliced from the shared sidebar model. `project` filters by name.
+    @MainActor private func sessionsJSON(project: String?) -> [String: Any] {
+        guard let ws = workspaceProvider() else { return ["ok": false, "error": "no window"] }
+        var out: [[String: Any]] = []
+        for (pi, p) in ws.projs.enumerated() where project == nil || p.name == project {
+            for (si, t) in p.sessions.enumerated() {
+                var d: [String: Any] = [
+                    "id": "\(pi).\(si)", "name": t.name ?? t.focusedLabel, "project": p.name,
+                    "panes": t.panes.count, "active": pi == ws.activeP && si == ws.activeS,
+                    "attention": ws.hasAttention(t),
+                ]
+                if let c = t.focusedCwd { d["cwd"] = c }
+                out.append(d)
+            }
+        }
+        return ["ok": true, "sessions": out]
+    }
+
     /// Run a verb the same way the CLI does — used by Lua's `vesta.cmd(...)` so plugins
     /// get every control verb (capture/state/split/tab/select/…) natively.
     @MainActor func invoke(_ cmd: String, _ args: [String]) -> [String: Any] { dispatch(cmd, args) }
@@ -124,6 +143,9 @@ final class ControlServer: @unchecked Sendable {
     @MainActor private func dispatch(_ cmd: String, _ args: [String]) -> [String: Any] {
         // App-level verbs that don't need a current window.
         switch cmd {
+        case "sessions" where args.contains("--json") || args.contains("--project"):
+            // --project implies structured output; the readable path has no filter.
+            return sessionsJSON(project: argValue(args, "--project"))
         case "state", "sessions":
             return stateProvider?() ?? ["ok": false, "error": "no state"]
         case "notify":
@@ -200,18 +222,78 @@ final class ControlServer: @unchecked Sendable {
         case "send-keys":
             // Submits the line by default (appends Enter), so a command actually runs;
             // pass --no-enter to send the keystrokes without a trailing Return.
+            // Broadcast modes fan the same text out to every pane of a target set:
+            //   --all             every pane in the focused session
+            //   --session <P.S>   every pane of session S in project P (select-style indices)
+            //   --project <name>  every pane in every session of the named project
             var rest = args
             var enter = true
             if let i = rest.firstIndex(of: "--no-enter") { rest.remove(at: i); enter = false }
+
+            // One broadcast mode at a time — otherwise the loser flag would be
+            // treated as the <text> and typed into every pane.
+            guard ["--all", "--session", "--project"].filter(rest.contains).count <= 1 else {
+                return ["ok": false, "error": "send-keys: --all, --session, --project are mutually exclusive"]
+            }
+            var targets: [PaneTree]? = nil
+            if let i = rest.firstIndex(of: "--all") {
+                rest.remove(at: i); targets = [tree]
+            } else if let i = rest.firstIndex(of: "--session") {
+                guard i + 1 < rest.count else { return ["ok": false, "error": "send-keys --session <P.S>"] }
+                let sid = rest[i + 1]; rest.removeSubrange(i...(i + 1))
+                let ix = sid.split(separator: ".").compactMap { Int($0) }
+                guard ix.count == 2, ix[0] >= 0, ix[0] < workspace.projs.count,
+                      ix[1] >= 0, ix[1] < workspace.projs[ix[0]].sessions.count else {
+                    return ["ok": false, "error": "send-keys --session <P.S> (select-style indices)"]
+                }
+                targets = [workspace.projs[ix[0]].sessions[ix[1]]]
+            } else if let i = rest.firstIndex(of: "--project") {
+                guard i + 1 < rest.count else { return ["ok": false, "error": "send-keys --project <name>"] }
+                let name = rest[i + 1]; rest.removeSubrange(i...(i + 1))
+                let matched = workspace.projs.filter { $0.name == name }.flatMap { $0.sessions }
+                guard !matched.isEmpty else { return ["ok": false, "error": "send-keys --project: no project '\(name)'"] }
+                targets = matched
+            }
+
+            if let targets {
+                guard let text = rest.first else { return ["ok": false, "error": "send-keys: <text> required"] }
+                let body = enter && !text.hasSuffix("\n") ? text + "\n" : text
+                let panes = targets.flatMap { $0.panes }
+                for p in panes { p.sendKeys(body) }
+                return ["ok": true, "panes": panes.count]
+            }
+
             guard rest.count >= 2, let pane = leaf(rest) else {
                 return ["ok": false, "error": "no pane"]
             }
             let text = rest[1]
             pane.sendKeys(enter && !text.hasSuffix("\n") ? text + "\n" : text)
-            return ["ok": true]
+            return ["ok": true, "panes": 1]
         case "capture":
             guard let pane = leaf(args) else { return ["ok": false, "error": "no pane"] }
             return ["ok": true, "text": pane.capture(scrollback: args.contains("--scrollback"))]
+        case "pane":
+            // pane status <paneID> — per-pane slice of what `state` dumps: cwd, title,
+            // alive (a foreground process is running under the pty), plus attention.
+            guard args.first == "status", args.count >= 2 else {
+                return ["ok": false, "error": "pane status <paneID>"]
+            }
+            let paneID = args[1]
+            for (pi, p) in workspace.projs.enumerated() {
+                for (si, t) in p.sessions.enumerated() {
+                    guard let pane = t.panes.first(where: { $0.paneID == paneID }) else { continue }
+                    let fg = pane.foregroundPID   // read once: `alive` and `pid` must agree
+                    var d: [String: Any] = [
+                        "ok": true, "paneID": paneID, "session": "\(pi).\(si)", "project": p.name,
+                        "title": pane.title, "alive": fg != nil,
+                        "attention": workspace.hasAttention(t),
+                    ]
+                    if let c = pane.cwd { d["cwd"] = c }
+                    if let fg { d["pid"] = Int(fg) }
+                    return d
+                }
+            }
+            return ["ok": false, "error": "pane status: no pane \(paneID)"]
         case "list":
             return ["ok": true, "panes": tree.list(), "tab": workspace.active, "tabs": workspace.tabs.count]
         case "open":
@@ -361,6 +443,12 @@ func runControlCLI(_ args: [String]) -> Int32 {
     } else if verb == "state" {
         if let d = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
            let s = String(data: d, encoding: .utf8) { print(s) }
+    } else if verb == "pane" || (verb == "sessions" && obj["sessions"] != nil) {
+        // Structured output (pane status / sessions --json): print the reply as pretty JSON.
+        if let d = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
+           let s = String(data: d, encoding: .utf8) { print(s) }
+    } else if verb == "send-keys", let n = obj["panes"] as? Int {
+        print("ok (\(n) pane\(n == 1 ? "" : "s"))")
     } else if verb == "sessions", let projects = obj["projects"] as? [[String: Any]] {
         // The key window's active (project,session) — marked with ▸ so `vesta select` is obvious.
         let key = (obj["windows"] as? [[String: Any]])?.first { ($0["key"] as? Bool) == true }
@@ -403,7 +491,9 @@ func printUsage() {
       focus [ID]                            focus pane ID, or cycle to the next
       zoom                                  toggle zoom on the focused pane
       send-keys <ID|focused> <text>         type text into a pane
+      send-keys --all|--session <P.S>|--project <name> <text>   broadcast (--all = focused session's panes)
       capture [ID|focused] [--scrollback]   print a pane's text
+      pane status <paneID>                  JSON: cwd, title, alive, attention for one pane
       list                                  list panes/tabs as JSON
       open [PATH]                           open PATH in a new tab (default ~)
       tab new|next|prev|close [--cwd DIR]   manage tabs
@@ -415,7 +505,7 @@ func printUsage() {
       plugins [list|sync]                   list installed Lua plugins (marks disabled), or git-pull + reload them
       plugins enable|disable <name>         turn a plugin on/off and reload
       state                                 dump all windows→projects→sessions→panes as JSON
-      sessions                              readable session list with select indices (▸ = active)
+      sessions [--json] [--project <name>]  readable session list (▸ = active); --json for structured records (--project implies --json)
       select <project> <session>            switch the active window to a session (0-based)
       rename <name>                         rename the active session
       project new [PATH] [--name X]|dir [PATH]|rename <name>|remove|color <#hex|none>   manage projects (new/dir: PATH or caller's cwd)
@@ -443,5 +533,6 @@ func controlSelfCheck() {
     assert(back["cmd"] as? String == "split")
     assert((back["args"] as? [Any])?.count == 1)
     assert(controlVerbs.contains("split"))
+    assert(controlVerbs.contains("pane"))
     print("controlSelfCheck ok")
 }

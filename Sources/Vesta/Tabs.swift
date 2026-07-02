@@ -60,6 +60,10 @@ final class Workspace {
     // Sessions that have rung the bell / fired a desktop notification while not active.
     private var attention: Set<ObjectIdentifier> = []
 
+    /// True if `tree` has pending attention (bell/notification while backgrounded).
+    /// Exposed for `sessions --json` / `pane status`.
+    func hasAttention(_ tree: PaneTree) -> Bool { attention.contains(ObjectIdentifier(tree)) }
+
     var activeTree: PaneTree { projs[activeP].sessions[activeS] }
     var totalSessions: Int { projs.reduce(0) { $0 + $1.sessions.count } }
 
