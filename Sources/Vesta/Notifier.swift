@@ -87,7 +87,7 @@ final class NotificationsPanel: NSView {
         header.translatesAutoresizingMaskIntoConstraints = false
         panel.addSubview(header)
 
-        let clear = ActionButton(symbol: "trash", pointSize: 11) { [weak self] in self?.onClear() }
+        let clear = ActionButton(symbol: "trash", label: "Clear all notifications", pointSize: 11) { [weak self] in self?.onClear() }
         clear.contentTintColor = NSColor(white: 0.5, alpha: 1)
         clear.toolTip = "Clear all"
         clear.isHidden = notes.isEmpty
@@ -180,7 +180,7 @@ final class NotificationsPanel: NSView {
         time.textColor = NSColor(white: 0.4, alpha: 1)
         time.translatesAutoresizingMaskIntoConstraints = false
 
-        let del = ActionButton(symbol: "xmark", pointSize: 9) { [weak self] in self?.onDelete(n.id) }
+        let del = ActionButton(symbol: "xmark", label: "Dismiss notification", pointSize: 9) { [weak self] in self?.onDelete(n.id) }
         del.contentTintColor = NSColor(white: 0.45, alpha: 1)
         del.toolTip = "Dismiss"
         del.translatesAutoresizingMaskIntoConstraints = false
@@ -245,14 +245,15 @@ final class NotificationsPanel: NSView {
 /// panel's clear-all and per-row dismiss buttons.
 private final class ActionButton: NSButton {
     private let handler: () -> Void
-    init(symbol: String, pointSize: CGFloat, handler: @escaping () -> Void) {
+    init(symbol: String, label: String, pointSize: CGFloat, handler: @escaping () -> Void) {
         self.handler = handler
         super.init(frame: .zero)
         isBordered = false
         bezelStyle = .regularSquare
         title = ""
         imagePosition = .imageOnly
-        image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+        setAccessibilityLabel(label)
+        image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular))
         target = self
         action = #selector(fire)

@@ -51,7 +51,7 @@ return { version = "1.0.0", priority = 0 }
 
 | Call | Description |
 |------|-------------|
-| `vesta.command(name, fn)` | Register a named command (runnable from a keybind or CLI). |
+| `vesta.command(name, fn)` | Register a named command (runnable from a keybind, the CLI, or the `⌘⇧P` command palette). |
 | `vesta.bind(chord, fn)` | Keybind, e.g. `"cmd+shift+p"`. |
 | `vesta.on(event, fn)` | Register an event handler (see Events). |
 | `vesta.timer(seconds, fn)` | Call `fn` every `seconds` (repeating). |

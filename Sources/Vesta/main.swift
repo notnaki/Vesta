@@ -236,6 +236,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }, freeing: refs.filter { $0 >= 0 })
     }
 
+    /// ⌘⇧P command palette: a searchable overlay of every runnable action — built-in app
+    /// commands (with their shortcuts) plus every Lua-registered `vesta.command`. Reuses the
+    /// vesta.pick overlay (PickerOverlay); selecting a row runs its action. Filtering is the
+    /// overlay's built-in case-insensitive substring match — no fuzzy matching. // ponytail: substring is fine.
+    func showCommandPalette() {
+        guard let ctx = active else { return }
+        let ws = ctx.workspace
+        // (label, shortcut-for-desc-column, action). Built-ins mirror installKeybinds/dispatchPrefix.
+        var entries: [(String, String, () -> Void)] = [
+            ("Split Vertical", "⌘D", { ws.activeTree.splitFocused(.vertical, cwd: ws.activeTree.focusedCwd) }),
+            ("Split Horizontal", "⌘⇧D", { ws.activeTree.splitFocused(.horizontal, cwd: ws.activeTree.focusedCwd) }),
+            ("Zoom Pane", "", { ws.activeTree.zoomFocused() }),
+            ("Close Pane", "⌘W", { ws.activeTree.closeFocused() }),
+            ("Close Session", "⌘⇧W", { ws.closeSession(ws.activeP, ws.activeS) }),
+            ("New Session", "⌘T", { ws.newSession(ws.activeP) }),
+            ("New Window", "⌘N", { [weak self] in self?.newWindow() }),
+            ("Toggle Sidebar", "⌘B", { ctx.controller.toggleSidebar() }),
+            ("Focus Next Pane", "⌘]", { ws.activeTree.focusNext() }),
+            ("Focus Previous Pane", "⌘[", { ws.activeTree.focusPrev() }),
+            ("Next Session", "⌘}", { ws.nextSession() }),
+            ("Previous Session", "⌘{", { ws.prevSession() }),
+            ("Find in Terminal", "⌘F", { ws.activeTree.focused?.startSearch() }),
+            ("Rename Session", "", { [weak self] in self?.promptRenameActiveSession() }),
+            ("Kill Session", "", { ws.activeTree.killFocusedSession() }),
+            ("Open Browser Pane", "⌘⇧↵", {
+                let tree = ws.activeTree
+                let url = ctx.detectedPort(tree).map { URL(string: "http://localhost:\($0)")! }
+                    ?? URL(string: "about:blank")!
+                tree.openBrowser(url: url)
+            }),
+            ("Notifications", "", { [weak self] in self?.showNotifications() }),
+            ("Enter Full Screen", "⌃⌘F", { ctx.controller.window?.toggleFullScreen(nil) }),
+            ("Settings…", "⌘,", { [weak self] in self?.openSettings() }),
+            ("Reload Config", "", { [weak self] in self?.reloadConfig() }),
+            ("Check for Updates…", "", { [weak self] in self?.checkForUpdates() }),
+            ("About Vesta", "", { [weak self] in self?.showAbout() }),
+        ]
+        // Lua plugin commands (vesta.command) appear alongside the built-ins.
+        for name in luaCommands.keys.sorted() {
+            entries.append((name, "plugin", { luaRunCommand(name) }))
+        }
+        let items = entries.map { PickItem(label: $0.0, desc: $0.1.isEmpty ? nil : $0.1) }
+        let actions = entries.map { $0.2 }
+        presentPicker(
+            { _, dismiss in
+                PickerOverlay(
+                    theme: self.theme, richItems: items, multiSelect: false, opts: PickOpts(),
+                    onPick: { idx in
+                        dismiss()
+                        if let i = idx.first, actions.indices.contains(i) { actions[i]() }
+                    },
+                    onCancel: { dismiss() })
+            }, freeing: [])
+    }
+
     /// vesta.panel: create (id 0) or update (existing id) a plugin panel. `window = "all"`
     /// renders it in every window; otherwise it lives in the active window and follows focus.
     /// Returns the panel id. Corner/scope are fixed at creation.
@@ -1107,6 +1162,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // ⌘B: toggle sidebar
             case "b":
                 ctx.controller.toggleSidebar()
+                return nil
+            // ⌘⇧P: command palette (searchable list of every built-in + Lua command)
+            case "p" where shift:
+                self.showCommandPalette()
                 return nil
             // ⌘]/⌘[: focus next/prev pane within the active session
             case "]":

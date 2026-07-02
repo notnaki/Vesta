@@ -428,7 +428,7 @@ final class VestaWindowController: NSWindowController {
         let countStr = String(format: "%02d", count)
         let header = sectionLabel("PROJECTS", count: countStr)
 
-        let plus = tinyButton(symbol: "plus") { [weak self] in self?.onNewProject() }
+        let plus = tinyButton(symbol: "plus", label: "Add project") { [weak self] in self?.onNewProject() }
         plus.translatesAutoresizingMaskIntoConstraints = false
 
         header.addSubview(plus)
@@ -448,8 +448,8 @@ final class VestaWindowController: NSWindowController {
 
         let caretView = NSImageView()
         let caretImg = p.expanded
-            ? NSImage(systemSymbolName: "chevron.down",  accessibilityDescription: nil)
-            : NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)
+            ? NSImage(systemSymbolName: "chevron.down",  accessibilityDescription: "Collapse project")
+            : NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Expand project")
         caretView.image = caretImg?.withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
         caretView.contentTintColor = txt(.faint)
         caretView.setContentHuggingPriority(.required, for: .horizontal)
@@ -481,7 +481,7 @@ final class VestaWindowController: NSWindowController {
             content.setCustomSpacing(8, after: nameLabel)
         }
 
-        let addBtn = tinyButton(symbol: "plus") { [weak self] in self?.onNewSession(pi) }
+        let addBtn = tinyButton(symbol: "plus", label: "New session") { [weak self] in self?.onNewSession(pi) }
         addBtn.translatesAutoresizingMaskIntoConstraints = false
 
         let bar = accentBar(active ? tint : .clear)
@@ -570,7 +570,7 @@ final class VestaWindowController: NSWindowController {
         inner.spacing = 5
         inner.translatesAutoresizingMaskIntoConstraints = false
 
-        let closeBtn = tinyButton(symbol: "xmark") { [weak self] in self?.onCloseSession(pi, si) }
+        let closeBtn = tinyButton(symbol: "xmark", label: "Close session") { [weak self] in self?.onCloseSession(pi, si) }
         closeBtn.translatesAutoresizingMaskIntoConstraints = false
 
         let bar = accentBar(active ? theme.accent : .clear)
@@ -730,14 +730,15 @@ final class VestaWindowController: NSWindowController {
     // MARK: – Shared helpers
 
     /// Tiny SF Symbol button with a block action (avoids selector boilerplate for inline lambdas).
-    private func tinyButton(symbol: String, action: @escaping () -> Void) -> NSButton {
+    private func tinyButton(symbol: String, label: String, action: @escaping () -> Void) -> NSButton {
         let btn = BlockButton(action: action)
         btn.isBordered = false
         btn.bezelStyle = .regularSquare
         btn.title = ""
         btn.imagePosition = .imageOnly
+        btn.setAccessibilityLabel(label)
         let cfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .light)
-        btn.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+        btn.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
             .withSymbolConfiguration(cfg)
         btn.contentTintColor = txt(.faint)
         return btn
