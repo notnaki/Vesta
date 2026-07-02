@@ -143,7 +143,8 @@ final class ControlServer: @unchecked Sendable {
     @MainActor private func dispatch(_ cmd: String, _ args: [String]) -> [String: Any] {
         // App-level verbs that don't need a current window.
         switch cmd {
-        case "sessions" where args.contains("--json"):
+        case "sessions" where args.contains("--json") || args.contains("--project"):
+            // --project implies structured output; the readable path has no filter.
             return sessionsJSON(project: argValue(args, "--project"))
         case "state", "sessions":
             return stateProvider?() ?? ["ok": false, "error": "no state"]
@@ -229,6 +230,11 @@ final class ControlServer: @unchecked Sendable {
             var enter = true
             if let i = rest.firstIndex(of: "--no-enter") { rest.remove(at: i); enter = false }
 
+            // One broadcast mode at a time — otherwise the loser flag would be
+            // treated as the <text> and typed into every pane.
+            guard ["--all", "--session", "--project"].filter(rest.contains).count <= 1 else {
+                return ["ok": false, "error": "send-keys: --all, --session, --project are mutually exclusive"]
+            }
             var targets: [PaneTree]? = nil
             if let i = rest.firstIndex(of: "--all") {
                 rest.remove(at: i); targets = [tree]
@@ -272,21 +278,22 @@ final class ControlServer: @unchecked Sendable {
             guard args.first == "status", args.count >= 2 else {
                 return ["ok": false, "error": "pane status <paneID>"]
             }
-            let pid = args[1]
+            let paneID = args[1]
             for (pi, p) in workspace.projs.enumerated() {
                 for (si, t) in p.sessions.enumerated() {
-                    guard let pane = t.panes.first(where: { $0.paneID == pid }) else { continue }
+                    guard let pane = t.panes.first(where: { $0.paneID == paneID }) else { continue }
+                    let fg = pane.foregroundPID   // read once: `alive` and `pid` must agree
                     var d: [String: Any] = [
-                        "ok": true, "paneID": pid, "session": "\(pi).\(si)", "project": p.name,
-                        "title": pane.title, "alive": pane.foregroundPID != nil,
+                        "ok": true, "paneID": paneID, "session": "\(pi).\(si)", "project": p.name,
+                        "title": pane.title, "alive": fg != nil,
                         "attention": workspace.hasAttention(t),
                     ]
                     if let c = pane.cwd { d["cwd"] = c }
-                    if let fg = pane.foregroundPID { d["pid"] = Int(fg) }
+                    if let fg { d["pid"] = Int(fg) }
                     return d
                 }
             }
-            return ["ok": false, "error": "pane status: no pane \(pid)"]
+            return ["ok": false, "error": "pane status: no pane \(paneID)"]
         case "list":
             return ["ok": true, "panes": tree.list(), "tab": workspace.active, "tabs": workspace.tabs.count]
         case "open":
@@ -484,7 +491,7 @@ func printUsage() {
       focus [ID]                            focus pane ID, or cycle to the next
       zoom                                  toggle zoom on the focused pane
       send-keys <ID|focused> <text>         type text into a pane
-      send-keys --all|--session <P.S>|--project <name> <text>   broadcast to many panes
+      send-keys --all|--session <P.S>|--project <name> <text>   broadcast (--all = focused session's panes)
       capture [ID|focused] [--scrollback]   print a pane's text
       pane status <paneID>                  JSON: cwd, title, alive, attention for one pane
       list                                  list panes/tabs as JSON
@@ -498,7 +505,7 @@ func printUsage() {
       plugins [list|sync]                   list installed Lua plugins (marks disabled), or git-pull + reload them
       plugins enable|disable <name>         turn a plugin on/off and reload
       state                                 dump all windows→projects→sessions→panes as JSON
-      sessions [--json] [--project <name>]  readable session list (▸ = active); --json for structured records
+      sessions [--json] [--project <name>]  readable session list (▸ = active); --json for structured records (--project implies --json)
       select <project> <session>            switch the active window to a session (0-based)
       rename <name>                         rename the active session
       project new [PATH] [--name X]|dir [PATH]|rename <name>|remove|color <#hex|none>   manage projects (new/dir: PATH or caller's cwd)

@@ -83,12 +83,12 @@ vesta focus <id> | vesta focus next
 vesta zoom                       # toggle zoom on the focused pane
 vesta close                      # close the focused pane
 vesta send-keys <target> <text>  # type into a pane + run it (target = pane id or "focused"; --no-enter to skip the Return)
-vesta send-keys --all|--session <P.S>|--project <name> <text>   # broadcast to every pane of a session/project (reply: pane count)
+vesta send-keys --all|--session <P.S>|--project <name> <text>   # broadcast: focused session's panes / session P.S / all of a project (reply: pane count)
 vesta capture                    # dump the focused pane's screen
 vesta pane status <paneID>       # JSON for one pane: cwd, title, alive, attention
 vesta list                       # the focused session's panes (+ tab index/count)
 vesta tab new|next|prev|close    # tab control
-vesta sessions [--json] [--project <name>]   # list sessions; --json for structured records (id, name, cwd, panes, active/attention)
+vesta sessions [--json] [--project <name>]   # list sessions; --json for structured records (id, name, cwd, panes, active/attention; --project implies --json)
 vesta kill <id>                  # end a session's shell (by paneID)
 vesta notify [--desktop] [--title <t>] <msg>   # toast + bell; desktop banner when backgrounded (--desktop forces)
 ```
