@@ -191,13 +191,20 @@ outer: while true {
         var tmp = [UInt8](repeating: 0, count: 65536)
         let k = read(STDIN_FILENO, &tmp, tmp.count)
         if k == 0 { break }           // EOF on stdin (pane closed) → detach
+        // PTY revoked (app quit): read() returns -1/EIO permanently. Without this the
+        // loop would re-select instantly forever, spinning at 100% CPU. Only EINTR and
+        // EAGAIN/EWOULDBLOCK are transient; anything else (EIO) means detach cleanly.
+        if k < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK { break }
         if k > 0, !send(.input(Data(tmp[0..<k]))) { break }   // write failed → teardown, like daemon EOF
     }
     // daemon → stdout (decode server frames; write output bytes).
     if __darwin_fd_isset(sock, &rset) != 0 {
         var tmp = [UInt8](repeating: 0, count: 65536)
         let k = read(sock, &tmp, tmp.count)
-        if k <= 0 { break }   // daemon gone → exit
+        if k == 0 { break }   // daemon closed the socket → exit
+        // sock is non-blocking: a spurious EAGAIN/EWOULDBLOCK (or EINTR) is transient,
+        // so don't treat it as EOF and don't process stale bytes. Only a real error breaks.
+        if k < 0 { if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }; break }
         inbuf.append(Data(tmp[0..<k]))
         while let f = decodeServerFrame(from: &inbuf) {
             switch f {
