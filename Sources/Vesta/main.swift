@@ -13,6 +13,7 @@ if argv.first == "selfcheck" {
     controlSelfCheck()
     gitSelfCheck()
     portsSelfCheck()
+    windowRefreshSelfCheck()
     workspaceSelfCheck()
     windowsFormatSelfCheck()
     worktreeSelfCheck()

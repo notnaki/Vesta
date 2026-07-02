@@ -26,6 +26,16 @@ final class WindowContext {
     private var lastCwd: [ObjectIdentifier: String] = [:]   // for the dir-changed event
     private let attnMinTicks = 3
 
+    // Debounce the full refresh: title/pwd spam from the focused pane fires refresh() many
+    // times/sec, each rebuilding the sidebar + spawning ~10 processes. We coalesce to at most
+    // one heavy refresh per second, keyed on the focused pane's (cwd, pid) — the only inputs
+    // to the git/ports work. A key change (open/close/select/split/dir) forces an immediate
+    // refresh; an unchanged key (attention/rename/title spam) rides a trailing refresh (≤1s).
+    private var lastRefreshKey = ""
+    private var lastRefreshAt = Date.distantPast
+    private var refreshQueued = false
+    private let refreshInterval: TimeInterval = 1.0
+
     init(theme: Theme,
          store: SessionStore,
          onBecomeKey: @escaping (WindowContext) -> Void,
@@ -174,19 +184,50 @@ final class WindowContext {
         controller.setProjects(projs)
     }
 
-    /// Update titlebar dir + sidebar footer (git) for the focused pane. Git runs
-    /// off-main so the shell-outs never block the UI.
+    /// Update titlebar dir + sidebar footer (git) for the focused pane. The titlebar is always
+    /// updated cheaply (title/pwd spam only needs this); the heavy sidebar rebuild + git/ports
+    /// spawns are debounced to ≤1×/s and short-circuited when the focused (cwd, pid) is unchanged.
     func refresh() {
+        // Cheap path first: keep the titlebar current on every call (this is what title/pwd
+        // spam actually needs). No spawns, no sidebar teardown.
         let cwd = workspace.activeTree.focusedCwd ?? FileManager.default.currentDirectoryPath
         let liveTitle = workspace.activeTree.focusedTitle
         controller.setDir(liveTitle.isEmpty ? abbreviateHome(cwd) : liveTitle)
-        renderSidebar()
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let g = Git.status(cwd)
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated { self?.controller.setStatus("normal" + (g.map { " · \($0)" } ?? "")) }
+
+        let key = Self.refreshKey(cwd: workspace.activeTree.focusedCwd, pid: workspace.activeTree.focusedPID)
+        let now = Date()
+        if !Self.shouldFullRefresh(key: key, lastKey: lastRefreshKey, lastAt: lastRefreshAt, now: now, interval: refreshInterval) {
+            // Same focus, refreshed recently → coalesce. Still schedule one trailing refresh so a
+            // pending content change (attention/rename) lands within the window (≤1s).
+            if !refreshQueued {
+                refreshQueued = true
+                let delay = refreshInterval - now.timeIntervalSince(lastRefreshAt)
+                DispatchQueue.main.asyncAfter(deadline: .now() + max(0, delay)) { [weak self] in
+                    guard let self else { return }
+                    self.refreshQueued = false
+                    self.fullRefresh()
+                }
             }
+            return
         }
+        fullRefresh()
+    }
+
+    /// Focus key for the debounce short-circuit: the git/ports work depends only on the focused
+    /// pane's cwd + pid, so an unchanged key means an unchanged heavy result.
+    nonisolated static func refreshKey(cwd: String?, pid: pid_t?) -> String { "\(cwd ?? "")|\(pid ?? 0)" }
+
+    /// Pure debounce decision (unit-tested in windowRefreshSelfCheck): run the heavy refresh when
+    /// the focus key changed, or when the last one is older than `interval`.
+    nonisolated static func shouldFullRefresh(key: String, lastKey: String, lastAt: Date, now: Date, interval: TimeInterval) -> Bool {
+        key != lastKey || now.timeIntervalSince(lastAt) >= interval
+    }
+
+    /// The heavy refresh: rebuild the sidebar and (off-main) recompute git status + ports.
+    private func fullRefresh() {
+        lastRefreshKey = Self.refreshKey(cwd: workspace.activeTree.focusedCwd, pid: workspace.activeTree.focusedPID)
+        lastRefreshAt = Date()
+        renderSidebar()
         let unchecked = workspace.projs.map(\.path).filter { branchCache[$0] == nil }
         if !unchecked.isEmpty {
             DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -204,16 +245,36 @@ final class WindowContext {
         let activeTreeID = ObjectIdentifier(workspace.activeTree)
         let activeCwd = workspace.activeTree.focusedCwd
         let activePID = workspace.activeTree.focusedPID
+        let statusCwd = activeCwd ?? FileManager.default.currentDirectoryPath
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            // One git spawn set (status --porcelain runs once, yields both the footer text AND
+            // the dirty count) plus one ports lookup, instead of two parallel git dispatches.
+            let (text, dirty) = Git.statusAndDirty(statusCwd)
             let ports = activePID.map { Ports.forShell(pid: $0) } ?? []
-            let dirty = activeCwd.map { Git.dirtyCount($0) } ?? 0
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.metaCache[activeTreeID] = (ports: ports, dirty: dirty)
+                    self.controller.setStatus("normal" + (text.map { " · \($0)" } ?? ""))
+                    self.metaCache[activeTreeID] = (ports: ports, dirty: activeCwd == nil ? 0 : dirty)
                     self.renderSidebar()
                 }
             }
         }
     }
+}
+
+/// Pure-logic check of the refresh debounce/short-circuit (no NSApp/ghostty needed).
+func windowRefreshSelfCheck() {
+    let t0 = Date()
+    let k = WindowContext.refreshKey(cwd: "/tmp", pid: 42)
+    // Changed focus → always refresh, even immediately.
+    assert(WindowContext.shouldFullRefresh(key: "other", lastKey: k, lastAt: t0, now: t0, interval: 1.0),
+           "changed focus key must refresh")
+    // Same focus, refreshed just now → coalesce.
+    assert(!WindowContext.shouldFullRefresh(key: k, lastKey: k, lastAt: t0, now: t0.addingTimeInterval(0.2), interval: 1.0),
+           "same key within interval must coalesce")
+    // Same focus, interval elapsed → trailing refresh runs.
+    assert(WindowContext.shouldFullRefresh(key: k, lastKey: k, lastAt: t0, now: t0.addingTimeInterval(1.1), interval: 1.0),
+           "same key past interval must refresh")
+    print("windowRefreshSelfCheck OK")
 }
